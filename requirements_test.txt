@@ -1,0 +1,11 @@
+pytest
+pytest-mock
+pytest-cov
+coverage
+flake8
+flake8-print
+flake8-simplify
+flake8-bugbear
+flake8-comprehensions
+flake8-use-fstring
+pip-audit
