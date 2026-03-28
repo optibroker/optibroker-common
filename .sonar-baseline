@@ -1,0 +1,8 @@
+# SonarQube baseline - do not lower these thresholds
+# Generated 2026-03-28
+coverage=96.5
+bugs=0
+vulnerabilities=1
+code_smells=2
+duplicated_lines_density=0.0
+security_hotspots=2
