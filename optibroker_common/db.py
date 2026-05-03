@@ -64,7 +64,8 @@ def get_db_session(current_user, session_factory):
     session = session_factory()
 
     try:
-        session.execute(text(f"SET search_path TO {realm}"))
+        safe_realm = realm.replace('"', '""')
+        session.execute(text(f'SET search_path TO "{safe_realm}"'))
         session.commit()
         g.db_session = session
         return session
