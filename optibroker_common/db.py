@@ -29,6 +29,10 @@ def create_db_engine(database_uri, pool_size=20, max_overflow=10, pool_timeout=3
         max_overflow=max_overflow,
         pool_timeout=pool_timeout,
         pool_recycle=pool_recycle,
+        # Validate pooled connections with a lightweight ping before use so a
+        # connection killed by an idle-timeout, DB restart, or network blip is
+        # transparently replaced instead of raising on the next checkout.
+        pool_pre_ping=True,
         echo=echo,
     )
 
