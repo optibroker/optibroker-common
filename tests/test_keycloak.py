@@ -17,6 +17,14 @@ def app():
     return app
 
 
+@pytest.fixture(autouse=True)
+def clear_realms_cache():
+    from optibroker_common import keycloak as keycloak_module
+    keycloak_module._realms_cache.invalidate()
+    yield
+    keycloak_module._realms_cache.invalidate()
+
+
 KC_PARAMS = {
     "server_url": "http://keycloak:8080",
     "client_id": "admin-cli",
@@ -76,6 +84,70 @@ class TestGetKeycloakRealms:
             realms = get_keycloak_realms(**KC_PARAMS)
             assert realms == ["tenant1", "tenant2"]
             assert "master" not in realms
+
+    @patch("optibroker_common.keycloak.requests.get")
+    @patch("optibroker_common.keycloak.get_keycloak_admin_token")
+    def test_second_call_uses_cache(self, mock_token, mock_get, app):
+        mock_token.return_value = "tok123"
+        mock_response = MagicMock()
+        mock_response.json.return_value = [{"realm": "tenant1"}]
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        with app.test_request_context():
+            first = get_keycloak_realms(**KC_PARAMS)
+            second = get_keycloak_realms(**KC_PARAMS)
+
+        assert first == second == ["tenant1"]
+        # Only the first call should have hit Keycloak.
+        assert mock_get.call_count == 1
+        assert mock_token.call_count == 1
+
+    @patch("optibroker_common.keycloak.requests.get")
+    @patch("optibroker_common.keycloak.get_keycloak_admin_token")
+    def test_force_refresh_bypasses_cache(self, mock_token, mock_get, app):
+        mock_token.return_value = "tok123"
+        first_resp = MagicMock()
+        first_resp.json.return_value = [{"realm": "tenant1"}]
+        first_resp.raise_for_status.return_value = None
+        second_resp = MagicMock()
+        second_resp.json.return_value = [{"realm": "tenant1"}, {"realm": "tenant2"}]
+        second_resp.raise_for_status.return_value = None
+        mock_get.side_effect = [first_resp, second_resp]
+
+        with app.test_request_context():
+            get_keycloak_realms(**KC_PARAMS)
+            refreshed = get_keycloak_realms(**KC_PARAMS, force_refresh=True)
+
+        assert refreshed == ["tenant1", "tenant2"]
+        assert mock_get.call_count == 2
+
+    @patch("optibroker_common.keycloak.requests.get")
+    @patch("optibroker_common.keycloak.get_keycloak_admin_token")
+    def test_serves_stale_on_fetch_failure(self, mock_token, mock_get, app):
+        mock_token.return_value = "tok123"
+        good_resp = MagicMock()
+        good_resp.json.return_value = [{"realm": "tenant1"}]
+        good_resp.raise_for_status.return_value = None
+        import requests as req
+        mock_get.side_effect = [good_resp, req.RequestException("keycloak down")]
+
+        with app.test_request_context():
+            get_keycloak_realms(**KC_PARAMS)
+            # Cache expired / force refresh, but Keycloak is unreachable.
+            result = get_keycloak_realms(**KC_PARAMS, force_refresh=True)
+
+        assert result == ["tenant1"]
+
+    @patch("optibroker_common.keycloak.requests.get")
+    @patch("optibroker_common.keycloak.get_keycloak_admin_token")
+    def test_raises_on_failure_when_no_cache(self, mock_token, mock_get, app):
+        mock_token.return_value = "tok123"
+        import requests as req
+        mock_get.side_effect = req.RequestException("keycloak down")
+
+        with app.test_request_context(), pytest.raises(req.RequestException):
+            get_keycloak_realms(**KC_PARAMS)
 
 
 class TestCreateKeycloakUser:

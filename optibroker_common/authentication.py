@@ -6,7 +6,61 @@ import requests
 from flask import request, abort
 from jwt.exceptions import InvalidSignatureError, ExpiredSignatureError
 
+from optibroker_common.cache import TTLCache
+
 logger = logging.getLogger(__name__)
+
+# In-memory cache of Keycloak JWKS (signing certs), keyed by issuer URL. Avoids
+# fetching the OpenID config and JWKS from Keycloak on every request.
+_jwks_cache = TTLCache()
+
+
+def _fetch_jwks(issuer_url):
+    """Fetch the JWKS document for an issuer via its OpenID configuration."""
+    openid_config_url = f"{issuer_url}/.well-known/openid-configuration"
+    openid_config = requests.get(openid_config_url).json()
+    jwks_uri = openid_config['jwks_uri']
+    return requests.get(jwks_uri).json()
+
+
+def _get_jwks(issuer_url, force_refresh=False):
+    """
+    Return the JWKS for an issuer, using the in-memory cache when possible.
+
+    Returns a ``(jwks, from_cache)`` tuple. ``from_cache`` is True when the
+    result came from a warm cache entry (rather than a live fetch), which lets
+    callers decide whether a missing key is worth a forced refresh.
+    """
+    if not force_refresh:
+        cached = _jwks_cache.get(issuer_url)
+        if cached is not None:
+            return cached, True
+
+    jwks = _fetch_jwks(issuer_url)
+    _jwks_cache.set(issuer_url, jwks)
+    return jwks, False
+
+
+def _find_signing_key(jwks, kid):
+    """Return the JWK dict matching ``kid`` from a JWKS document, or None."""
+    for key in jwks.get('keys', []):
+        if key.get('kid') == kid:
+            return key
+    return None
+
+
+def _get_realms(get_realms_func, force_refresh=False):
+    """
+    Call a realm-provider function, passing ``force_refresh`` when supported.
+
+    The provider is configured by each service and may or may not accept a
+    ``force_refresh`` argument; fall back to a plain call for older providers so
+    this stays backward compatible.
+    """
+    try:
+        return get_realms_func(force_refresh=force_refresh)
+    except TypeError:
+        return get_realms_func()
 
 
 def get_bearer_token():
@@ -25,17 +79,19 @@ def get_public_key(issuer_url, kid, keycloak_server_url):
     Retrieve the public key from Keycloak's OpenID configuration based on the key ID (kid).
     """
     issuer_url = issuer_url.replace('http://localhost:8080', keycloak_server_url)
-    openid_config_url = f"{issuer_url}/.well-known/openid-configuration"
     try:
-        openid_config = requests.get(openid_config_url).json()
-        jwks_uri = openid_config['jwks_uri']
-        jwks = requests.get(jwks_uri).json()
+        jwks, from_cache = _get_jwks(issuer_url)
+        key = _find_signing_key(jwks, kid)
 
-        for key in jwks['keys']:
-            if key['kid'] == kid:
-                if isinstance(key, dict):
-                    key = json.dumps(key)
-                return jwt.algorithms.RSAAlgorithm.from_jwk(key)
+        # If the key isn't in a cached JWKS, Keycloak may have rotated its
+        # signing keys since we cached them. Refresh once before giving up so a
+        # key rotation doesn't require restarting the service.
+        if key is None and from_cache:
+            jwks, _ = _get_jwks(issuer_url, force_refresh=True)
+            key = _find_signing_key(jwks, kid)
+
+        if key is not None:
+            return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
     except requests.RequestException as req_err:
         abort(503, description=f"Failed to retrieve OpenID configuration: {req_err}")
 
@@ -118,7 +174,12 @@ def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=Non
         if not user_id:
             abort(401, description="Invalid token: Missing user_id.")
 
-        if get_realms_func is not None and realm_name not in get_realms_func():
+        # The realm may have been added to Keycloak after the realm list was
+        # cached. If it isn't in the cached list, force a refresh before
+        # rejecting so a new realm doesn't require restarting every API.
+        if (get_realms_func is not None
+                and realm_name not in get_realms_func()
+                and realm_name not in _get_realms(get_realms_func, force_refresh=True)):
             abort(401, description="Invalid Realm: not in list of valid Realms.")
 
         return {"user_id": user_id, "permissions": roles, "realm": realm_name}

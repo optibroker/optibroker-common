@@ -3,7 +3,13 @@ import logging
 import requests
 from flask import abort
 
+from optibroker_common.cache import TTLCache
+
 logger = logging.getLogger(__name__)
+
+# In-memory cache of the realm list, keyed by Keycloak server URL. Shared across
+# requests within a process so we don't hit Keycloak on every authenticated call.
+_realms_cache = TTLCache()
 
 
 def get_keycloak_admin_token(server_url, client_id, admin_username, admin_password):
@@ -39,19 +45,8 @@ def get_keycloak_admin_token(server_url, client_id, admin_username, admin_passwo
     return response.json().get('access_token')
 
 
-def get_keycloak_realms(server_url, client_id, admin_username, admin_password):
-    """
-    Retrieve a list of realms from Keycloak, excluding the 'master' realm.
-
-    Args:
-        server_url: Base URL of the Keycloak server.
-        client_id: Client ID for the admin token request.
-        admin_username: Keycloak admin username.
-        admin_password: Keycloak admin password.
-
-    Returns:
-        list: A list of realm names, excluding 'master'.
-    """
+def _fetch_keycloak_realms(server_url, client_id, admin_username, admin_password):
+    """Fetch the realm list from Keycloak, excluding the 'master' realm."""
     token = get_keycloak_admin_token(server_url, client_id, admin_username, admin_password)
 
     headers = {
@@ -62,6 +57,46 @@ def get_keycloak_realms(server_url, client_id, admin_username, admin_password):
     response.raise_for_status()
 
     return [realm['realm'] for realm in response.json() if realm['realm'] != 'master']
+
+
+def get_keycloak_realms(server_url, client_id, admin_username, admin_password, force_refresh=False):
+    """
+    Retrieve a list of realms from Keycloak, excluding the 'master' realm.
+
+    Results are cached in memory (keyed by ``server_url``) so repeated calls -
+    for example on every authenticated request - don't hammer Keycloak. Pass
+    ``force_refresh=True`` to bypass the cache and re-fetch; this lets a realm
+    that was added to Keycloak after the cache warmed be picked up without
+    restarting the service. If a live fetch fails, a previously cached (even
+    expired) list is served as a fallback so a transient Keycloak outage
+    doesn't break authentication.
+
+    Args:
+        server_url: Base URL of the Keycloak server.
+        client_id: Client ID for the admin token request.
+        admin_username: Keycloak admin username.
+        admin_password: Keycloak admin password.
+        force_refresh: Skip the cache and re-fetch from Keycloak.
+
+    Returns:
+        list: A list of realm names, excluding 'master'.
+    """
+    if not force_refresh:
+        cached = _realms_cache.get(server_url)
+        if cached is not None:
+            return cached
+
+    try:
+        realms = _fetch_keycloak_realms(server_url, client_id, admin_username, admin_password)
+    except Exception:
+        stale = _realms_cache.get_stale(server_url)
+        if stale is not None:
+            logger.warning("Failed to refresh Keycloak realms; serving cached list.", exc_info=True)
+            return stale
+        raise
+
+    _realms_cache.set(server_url, realms)
+    return realms
 
 
 def create_keycloak_user(server_url, client_id, admin_username, admin_password,
