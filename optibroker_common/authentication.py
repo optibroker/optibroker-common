@@ -98,6 +98,25 @@ def verify_jwt_or_secret_key(algorithm, keycloak_server_url, secret_keys=None):
     abort(401, description="Authorization header is invalid.")
 
 
+def extract_actor(payload):
+    """Return the real actor id from an RFC 8693 ``act`` (actor) claim.
+
+    Keycloak's token-exchange impersonation flow embeds the user who initiated
+    the impersonation in the token's ``act`` claim (``{"act": {"sub": "<id>"}}``).
+    When a user "Steve" is acting as "Sarah", the token's ``sub`` is Sarah and
+    ``act.sub`` is Steve.
+
+    Returns ``(real_actor_id, is_impersonating)``: the actor's user id and True
+    when an actor claim is present, otherwise ``(None, False)``.
+    """
+    act = payload.get("act")
+    if isinstance(act, dict):
+        actor_sub = act.get("sub")
+        if actor_sub:
+            return actor_sub, True
+    return None, False
+
+
 def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=None):
     """
     Extract user permissions from the verified JWT payload.
@@ -121,9 +140,51 @@ def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=Non
         if get_realms_func is not None and realm_name not in get_realms_func():
             abort(401, description="Invalid Realm: not in list of valid Realms.")
 
-        return {"user_id": user_id, "permissions": roles, "realm": realm_name}
+        # When the token was minted via impersonation (Keycloak token exchange),
+        # user_id is the impersonated subject and real_actor_id is who is really
+        # acting. For non-impersonated tokens the two are the same, so callers
+        # can always attribute audit to real_actor_id.
+        real_actor_id, is_impersonating = extract_actor(verified_payload)
+        return {
+            "user_id": user_id,
+            "permissions": roles,
+            "realm": realm_name,
+            "is_impersonating": is_impersonating,
+            "real_actor_id": real_actor_id or user_id,
+        }
 
     return verified_payload
+
+
+def get_impersonation_context():
+    """Best-effort impersonation info for the current request, for audit use.
+
+    Reads the bearer token from the request and decodes it WITHOUT verifying the
+    signature -- the request has already been authenticated upstream; this is
+    enrichment only. Returns a dict with ``is_impersonating``, ``real_actor_id``
+    and ``impersonated_user_id``. When there is no impersonation (or no usable
+    token) ``is_impersonating`` is False and ``real_actor_id`` falls back to the
+    token subject.
+    """
+    default = {"is_impersonating": False, "real_actor_id": None, "impersonated_user_id": None}
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return default
+
+    token = auth_header.split(" ")[1]
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+    except jwt.PyJWTError:
+        return default
+
+    subject = claims.get("sub")
+    actor_id, is_impersonating = extract_actor(claims)
+    return {
+        "is_impersonating": is_impersonating,
+        "real_actor_id": actor_id or subject,
+        "impersonated_user_id": subject,
+    }
 
 
 def has_permission(required_permissions, algorithm, keycloak_server_url,

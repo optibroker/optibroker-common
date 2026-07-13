@@ -1,5 +1,6 @@
 from unittest.mock import patch, MagicMock
 
+import jwt
 import pytest
 from flask import Flask
 
@@ -9,6 +10,8 @@ from optibroker_common.authentication import (
     verify_jwt_or_secret_key,
     get_current_user_permissions,
     has_permission,
+    extract_actor,
+    get_impersonation_context,
 )
 
 
@@ -178,6 +181,85 @@ class TestGetCurrentUserPermissions:
                     get_realms_func=lambda: ["goodrealm"]
                 )
             assert exc_info.value.code == 401
+
+
+class TestExtractActor:
+    def test_returns_actor_when_act_claim_present(self):
+        actor_id, is_impersonating = extract_actor({"sub": "sarah", "act": {"sub": "steve"}})
+        assert actor_id == "steve"
+        assert is_impersonating is True
+
+    def test_no_act_claim(self):
+        actor_id, is_impersonating = extract_actor({"sub": "sarah"})
+        assert actor_id is None
+        assert is_impersonating is False
+
+    def test_act_claim_without_sub(self):
+        actor_id, is_impersonating = extract_actor({"sub": "sarah", "act": {}})
+        assert actor_id is None
+        assert is_impersonating is False
+
+
+class TestGetCurrentUserPermissionsImpersonation:
+    @patch("optibroker_common.authentication.verify_jwt_or_secret_key")
+    def test_impersonated_token_exposes_real_actor(self, mock_verify, app):
+        mock_verify.return_value = {
+            "sub": "sarah",
+            "realm_access": {"roles": ["viewer"]},
+            "iss": "http://keycloak/realms/testrealm",
+            "act": {"sub": "steve"},
+        }
+
+        with app.test_request_context():
+            result = get_current_user_permissions("RS256", "http://keycloak")
+            # The system believes the caller is the impersonated subject...
+            assert result["user_id"] == "sarah"
+            # ...but the real actor is preserved for audit.
+            assert result["is_impersonating"] is True
+            assert result["real_actor_id"] == "steve"
+
+    @patch("optibroker_common.authentication.verify_jwt_or_secret_key")
+    def test_normal_token_real_actor_is_subject(self, mock_verify, app):
+        mock_verify.return_value = {
+            "sub": "sarah",
+            "realm_access": {"roles": ["viewer"]},
+            "iss": "http://keycloak/realms/testrealm",
+        }
+
+        with app.test_request_context():
+            result = get_current_user_permissions("RS256", "http://keycloak")
+            assert result["is_impersonating"] is False
+            assert result["real_actor_id"] == "sarah"
+
+
+class TestGetImpersonationContext:
+    def test_impersonated_token(self, app):
+        token = jwt.encode({"sub": "sarah", "act": {"sub": "steve"}}, "secret", algorithm="HS256")
+        with app.test_request_context(headers={"Authorization": f"Bearer {token}"}):
+            ctx = get_impersonation_context()
+            assert ctx["is_impersonating"] is True
+            assert ctx["real_actor_id"] == "steve"
+            assert ctx["impersonated_user_id"] == "sarah"
+
+    def test_normal_token(self, app):
+        token = jwt.encode({"sub": "sarah"}, "secret", algorithm="HS256")
+        with app.test_request_context(headers={"Authorization": f"Bearer {token}"}):
+            ctx = get_impersonation_context()
+            assert ctx["is_impersonating"] is False
+            assert ctx["real_actor_id"] == "sarah"
+            assert ctx["impersonated_user_id"] == "sarah"
+
+    def test_no_bearer_token(self, app):
+        with app.test_request_context():
+            ctx = get_impersonation_context()
+            assert ctx["is_impersonating"] is False
+            assert ctx["real_actor_id"] is None
+
+    def test_malformed_token(self, app):
+        with app.test_request_context(headers={"Authorization": "Bearer not-a-jwt"}):
+            ctx = get_impersonation_context()
+            assert ctx["is_impersonating"] is False
+            assert ctx["real_actor_id"] is None
 
 
 class TestHasPermission:

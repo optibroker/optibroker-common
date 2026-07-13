@@ -4,6 +4,8 @@ from datetime import datetime
 
 from flask import request
 
+from optibroker_common.authentication import get_impersonation_context
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,11 @@ class AuditLogger:
             jwt_token = request.headers.get("Authorization", "").replace("Bearer ", "")
             payload = request.get_json(silent=True) or {}
 
+            # Capture the real actor behind any impersonation so the audit trail
+            # can record "Steve did this while acting as Sarah". For ordinary
+            # requests is_impersonating is False and real_actor_id is the caller.
+            impersonation = get_impersonation_context()
+
             message = {
                 "event_id": str(uuid.uuid4()),
                 "jwt": jwt_token,
@@ -40,6 +47,9 @@ class AuditLogger:
                 "action_type": action_type,
                 "event": event,
                 "timestamp": datetime.utcnow().isoformat(),
+                "is_impersonating": impersonation["is_impersonating"],
+                "real_actor_id": impersonation["real_actor_id"],
+                "impersonated_user_id": impersonation["impersonated_user_id"],
                 "metadata": {
                     "user_ip": request.remote_addr,
                     "payload": payload

@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import jwt
 import pytest
 from flask import Flask
 
@@ -63,6 +64,37 @@ class TestAuditLogger:
         mock_sender = MagicMock()
         audit = AuditLogger(sender=mock_sender)
         assert audit.sender is mock_sender
+
+    def test_log_records_impersonation_actor(self, app):
+        mock_sender = MagicMock()
+        audit = AuditLogger(sender=mock_sender)
+
+        token = jwt.encode({"sub": "sarah", "act": {"sub": "steve"}}, "secret", algorithm="HS256")
+        with app.test_request_context(
+            "/api/clients", method="POST", json={},
+            headers={"Authorization": f"Bearer {token}"},
+        ):
+            audit.log("client-1", "client", "update", "client_updated", "client-api")
+
+        message = mock_sender.send_message.call_args[0][0]
+        assert message["is_impersonating"] is True
+        assert message["real_actor_id"] == "steve"
+        assert message["impersonated_user_id"] == "sarah"
+
+    def test_log_normal_request_actor_is_subject(self, app):
+        mock_sender = MagicMock()
+        audit = AuditLogger(sender=mock_sender)
+
+        token = jwt.encode({"sub": "sarah"}, "secret", algorithm="HS256")
+        with app.test_request_context(
+            "/api/clients", method="POST", json={},
+            headers={"Authorization": f"Bearer {token}"},
+        ):
+            audit.log("client-1", "client", "update", "client_updated", "client-api")
+
+        message = mock_sender.send_message.call_args[0][0]
+        assert message["is_impersonating"] is False
+        assert message["real_actor_id"] == "sarah"
 
     @patch("optibroker_common.audit.uuid.uuid4")
     def test_event_id_is_uuid(self, mock_uuid, app):
