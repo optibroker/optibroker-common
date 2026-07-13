@@ -4,7 +4,7 @@ import jwt
 import pytest
 from flask import Flask
 
-from optibroker_common.audit import AuditLogger
+from optibroker_common.audit import AuditLogger, audit_actor
 
 
 @pytest.fixture
@@ -96,6 +96,34 @@ class TestAuditLogger:
         assert message["is_impersonating"] is False
         assert message["real_actor_id"] == "sarah"
 
+class TestAuditActor:
+    def test_impersonated_attributes_to_real_actor(self):
+        user, note = audit_actor({
+            "user_id": "sarah", "real_actor_id": "steve", "is_impersonating": True,
+        })
+        assert user == "steve"
+        assert note == "acting as sarah"
+
+    def test_normal_request(self):
+        user, note = audit_actor({
+            "user_id": "sarah", "real_actor_id": "sarah", "is_impersonating": False,
+        })
+        assert user == "sarah"
+        assert note is None
+
+    def test_pre_adoption_fallback(self):
+        # current_user without the actor-aware fields (older token handling).
+        user, note = audit_actor({"user_id": "sarah"})
+        assert user == "sarah"
+        assert note is None
+
+    def test_service_account_fallback(self):
+        user, note = audit_actor({"user": "sqs_feeder"})
+        assert user == "sqs_feeder"
+        assert note is None
+
+
+class TestEventId:
     @patch("optibroker_common.audit.uuid.uuid4")
     def test_event_id_is_uuid(self, mock_uuid, app):
         mock_uuid.return_value = "fixed-uuid-123"
