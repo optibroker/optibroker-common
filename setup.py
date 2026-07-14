@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="optibroker-common",
-    version="1.0.0",
+    version="1.0.4",
     packages=find_packages(),
     install_requires=[
         "Flask>=2.3.0",
