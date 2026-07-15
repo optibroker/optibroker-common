@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: optibroker-common
-Version: 1.0.4
+Version: 1.0.5
 Requires-Python: >=3.9
 Requires-Dist: Flask>=2.3.0
 Requires-Dist: PyJWT>=2.0.0

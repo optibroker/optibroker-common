@@ -1,14 +1,15 @@
 import logging
 from functools import wraps
 
-from optibroker_common.authentication import has_permission
+from optibroker_common.authentication import has_permission, set_impersonation_public_key
 
 logger = logging.getLogger(__name__)
 
 _auth_config = {}
 
 
-def configure(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=None):
+def configure(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=None,
+              impersonation_public_key=None):
     """
     Call this once at app startup to configure auth settings for the validation decorator.
 
@@ -17,6 +18,9 @@ def configure(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=
         keycloak_server_url: Base URL of the Keycloak server.
         secret_keys: Optional list of valid secret keys for SecretKey auth.
         get_realms_func: Optional callable that returns a list of valid realm names.
+        impersonation_public_key: Optional PEM (or base64-encoded PEM) public key
+            used to verify app-level impersonation assertions. Falls back to the
+            IMPERSONATION_PUBLIC_KEY environment variable when not provided.
     """
     _auth_config.update({
         "algorithm": algorithm,
@@ -24,6 +28,9 @@ def configure(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=
         "secret_keys": secret_keys,
         "get_realms_func": get_realms_func,
     })
+
+    if impersonation_public_key is not None:
+        set_impersonation_public_key(impersonation_public_key)
 
 
 def get_current_user(required_permissions=None, allow_secret_key=False):
