@@ -1,7 +1,10 @@
+import datetime
 from unittest.mock import patch, MagicMock
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from flask import Flask
 
 from optibroker_common.authentication import (
@@ -12,6 +15,9 @@ from optibroker_common.authentication import (
     has_permission,
     extract_actor,
     get_impersonation_context,
+    apply_impersonation_context,
+    set_impersonation_public_key,
+    IMPERSONATION_HEADER,
 )
 
 
@@ -20,6 +26,33 @@ def app():
     app = Flask(__name__)
     app.config["TESTING"] = True
     return app
+
+
+# One keypair for the whole module — RSA keygen is slow.
+_IMP_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_IMP_PRIVATE_PEM = _IMP_KEY.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.PKCS8,
+    serialization.NoEncryption(),
+).decode()
+_IMP_PUBLIC_PEM = _IMP_KEY.public_key().public_bytes(
+    serialization.Encoding.PEM,
+    serialization.PublicFormat.SubjectPublicKeyInfo,
+).decode()
+
+
+def _make_assertion(actor_id="steve", subject_id="sarah", realm="testrealm",
+                    roles=None, exp_delta=300, key=None):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        "actor_id": actor_id,
+        "subject_id": subject_id,
+        "realm": realm,
+        "roles": roles if roles is not None else ["viewer"],
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=exp_delta),
+    }
+    return jwt.encode(payload, key or _IMP_PRIVATE_PEM, algorithm="RS256")
 
 
 class TestGetBearerToken:
@@ -260,6 +293,84 @@ class TestGetImpersonationContext:
             ctx = get_impersonation_context()
             assert ctx["is_impersonating"] is False
             assert ctx["real_actor_id"] is None
+
+
+class TestApplyImpersonationContext:
+    def setup_method(self):
+        set_impersonation_public_key(_IMP_PUBLIC_PEM)
+
+    def teardown_method(self):
+        set_impersonation_public_key(None)
+
+    def _actor(self):
+        return {
+            "user_id": "steve",
+            "permissions": ["STAFF"],
+            "realm": "testrealm",
+            "is_impersonating": False,
+            "real_actor_id": "steve",
+        }
+
+    def test_no_header_returns_unchanged(self, app):
+        with app.test_request_context():
+            result = apply_impersonation_context(self._actor())
+            assert result["user_id"] == "steve"
+            assert result["is_impersonating"] is False
+
+    def test_valid_assertion_resolves_to_subject(self, app):
+        assertion = _make_assertion(roles=["CLIENT_VIEW"])
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            result = apply_impersonation_context(self._actor())
+            # The request now acts as the subject with the subject's roles...
+            assert result["user_id"] == "sarah"
+            assert result["permissions"] == ["CLIENT_VIEW"]
+            # ...and the real actor is preserved for audit.
+            assert result["is_impersonating"] is True
+            assert result["real_actor_id"] == "steve"
+            assert result["impersonator_id"] == "steve"
+
+    def test_actor_mismatch_forbidden(self, app):
+        # Assertion minted for a different actor than the authenticated caller.
+        assertion = _make_assertion(actor_id="mallory")
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            with pytest.raises(Exception) as exc_info:
+                apply_impersonation_context(self._actor())
+            assert exc_info.value.code == 403
+
+    def test_realm_mismatch_forbidden(self, app):
+        assertion = _make_assertion(realm="otherrealm")
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            with pytest.raises(Exception) as exc_info:
+                apply_impersonation_context(self._actor())
+            assert exc_info.value.code == 403
+
+    def test_expired_assertion_unauthorized(self, app):
+        assertion = _make_assertion(exp_delta=-10)
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            with pytest.raises(Exception) as exc_info:
+                apply_impersonation_context(self._actor())
+            assert exc_info.value.code == 401
+
+    def test_wrong_key_unauthorized(self, app):
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        other_pem = other.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        assertion = _make_assertion(key=other_pem)
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            with pytest.raises(Exception) as exc_info:
+                apply_impersonation_context(self._actor())
+            assert exc_info.value.code == 401
+
+    def test_no_key_configured_fails_closed(self, app):
+        set_impersonation_public_key(None)
+        assertion = _make_assertion()
+        with app.test_request_context(headers={IMPERSONATION_HEADER: assertion}):
+            with pytest.raises(Exception) as exc_info:
+                apply_impersonation_context(self._actor())
+            assert exc_info.value.code == 401
 
 
 class TestHasPermission:
