@@ -91,6 +91,30 @@ class TestGetPublicKey:
             assert result == "public_key_value"
 
     @patch("optibroker_common.authentication.requests.get")
+    def test_foreign_issuer_aborts_401_without_fetching(self, mock_get, app):
+        # OB-55: a token whose `iss` points at a server that is not our Keycloak
+        # must be rejected before any key is fetched from it. Otherwise an
+        # attacker hosts their own JWKS, names a real realm, and self-signs a
+        # token that verifies against their own key.
+        with app.test_request_context():
+            with pytest.raises(Exception) as exc_info:
+                get_public_key(
+                    "http://attacker.example/realms/test", "key1", "http://keycloak")
+            assert exc_info.value.code == 401
+        mock_get.assert_not_called()
+
+    @patch("optibroker_common.authentication.requests.get")
+    def test_issuer_prefix_is_realms_path_not_substring(self, mock_get, app):
+        # The pin is on `<server>/realms/`, so a look-alike host that merely
+        # starts with the server string (e.g. keycloak.attacker.com) is rejected.
+        with app.test_request_context():
+            with pytest.raises(Exception) as exc_info:
+                get_public_key(
+                    "http://keycloak.attacker.com/realms/test", "key1", "http://keycloak")
+            assert exc_info.value.code == 401
+        mock_get.assert_not_called()
+
+    @patch("optibroker_common.authentication.requests.get")
     def test_request_error_aborts_503(self, mock_get, app):
         import requests as req
         mock_get.side_effect = req.RequestException("connection refused")

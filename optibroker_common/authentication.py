@@ -66,6 +66,17 @@ def get_public_key(issuer_url, kid, keycloak_server_url):
     Retrieve the public key from Keycloak's OpenID configuration based on the key ID (kid).
     """
     issuer_url = issuer_url.replace('http://localhost:8080', keycloak_server_url)
+
+    # SECURITY (OB-55): `issuer_url` is the `iss` claim of the still-unverified
+    # token, and it decides which server we fetch the signing key from. If it is
+    # not pinned to our own Keycloak, an attacker can host their own JWKS, put a
+    # real realm name in `iss`, sign the token with their own key, and have it
+    # verified against that key — a full authentication bypass. Pin the issuer to
+    # KEYCLOAK_SERVER_URL/realms/ before trusting it for key discovery.
+    trusted_prefix = keycloak_server_url.rstrip('/') + '/realms/'
+    if not issuer_url.startswith(trusted_prefix):
+        abort(401, description="Untrusted token issuer.")
+
     openid_config_url = f"{issuer_url}/.well-known/openid-configuration"
     try:
         openid_config = requests.get(openid_config_url).json()
