@@ -9,3 +9,4 @@ flake8-bugbear
 flake8-comprehensions
 flake8-use-fstring
 pip-audit
+cryptography
