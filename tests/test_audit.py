@@ -96,6 +96,7 @@ class TestAuditLogger:
         assert message["is_impersonating"] is False
         assert message["real_actor_id"] == "sarah"
 
+
 class TestAuditActor:
     def test_impersonated_attributes_to_real_actor(self):
         user, note = audit_actor({

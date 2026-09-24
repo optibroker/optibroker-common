@@ -417,3 +417,120 @@ class TestHasPermission:
             with pytest.raises(Exception) as exc_info:
                 has_permission([], "RS256", "http://keycloak", allow_secret_key=False)
             assert exc_info.value.code == 403
+
+
+# ---------------------------------------------------------------------------
+# The issuer is read off a token nobody has verified yet. Taking it at its word
+# let anyone mint a token for any real realm, with any roles, and have it
+# accepted: host a JWKS, point iss at your own server, sign with your own key.
+# Confirmed exploitable end to end before this was pinned.
+# ---------------------------------------------------------------------------
+
+OUR_KEYCLOAK = "https://keycloak.optibroker.test"
+
+
+class TestIssuerIsPinnedToOurKeycloak:
+
+    @patch("optibroker_common.authentication.requests.get")
+    def test_an_attackers_server_is_never_asked_for_a_key(self, mock_get, app):
+        # The whole attack in one line: a real realm name, somebody else's host.
+        forged = "https://attacker.example.com/realms/fsw"
+
+        with app.test_request_context(), pytest.raises(Exception) as err:
+            get_public_key(forged, "key1", OUR_KEYCLOAK)
+
+        assert "401" in str(err.value)
+        # Not "we fetched it and rejected the key" -- we never called out at all.
+        mock_get.assert_not_called()
+
+    @patch("optibroker_common.authentication.requests.get")
+    def test_a_host_that_merely_starts_like_ours_is_not_ours(self, mock_get, app):
+        # keycloak.optibroker.test.evil.example.com starts with our URL as a
+        # string. It is a different host, and "/realms/" straight after the
+        # configured URL is what catches it.
+        forged = f"{OUR_KEYCLOAK}.evil.example.com/realms/fsw"
+
+        with app.test_request_context(), pytest.raises(Exception) as err:
+            get_public_key(forged, "key1", OUR_KEYCLOAK)
+
+        assert "401" in str(err.value)
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize("issuer", [
+        f"{OUR_KEYCLOAK}/realms/",                    # no realm at all
+        f"{OUR_KEYCLOAK}/realms/fsw/../other",        # reaching sideways
+        f"{OUR_KEYCLOAK}/realms/fsw/extra",           # not a Keycloak issuer
+        f"{OUR_KEYCLOAK}/admin/realms/fsw",           # somewhere else on our server
+        "",
+        None,
+    ])
+    @patch("optibroker_common.authentication.requests.get")
+    def test_anything_that_is_not_one_realm_on_our_server_is_refused(self, mock_get, issuer, app):
+        with app.test_request_context(), pytest.raises(Exception) as err:
+            get_public_key(issuer, "key1", OUR_KEYCLOAK)
+
+        assert "401" in str(err.value)
+        mock_get.assert_not_called()
+
+    @patch("optibroker_common.authentication.jwt.algorithms.RSAAlgorithm.from_jwk")
+    @patch("optibroker_common.authentication.requests.get")
+    def test_our_own_issuer_still_works(self, mock_get, mock_from_jwk, app):
+        mock_get.side_effect = [
+            MagicMock(json=lambda: {"jwks_uri": f"{OUR_KEYCLOAK}/realms/fsw/protocol/openid-connect/certs"}),
+            MagicMock(json=lambda: {"keys": [{"kid": "key1", "kty": "RSA"}]}),
+        ]
+        mock_from_jwk.return_value = "the-key"
+
+        with app.test_request_context():
+            result = get_public_key(f"{OUR_KEYCLOAK}/realms/fsw", "key1", OUR_KEYCLOAK)
+
+        assert result == "the-key"
+        # Asked our server for that realm, using our URL rather than the token's.
+        assert mock_get.call_args_list[0].args[0] == (
+            f"{OUR_KEYCLOAK}/realms/fsw/.well-known/openid-configuration"
+        )
+
+    @patch("optibroker_common.authentication.jwt.algorithms.RSAAlgorithm.from_jwk")
+    @patch("optibroker_common.authentication.requests.get")
+    def test_the_configured_url_is_used_even_when_the_token_names_another(self, mock_get, mock_from_jwk, app):
+        mock_get.side_effect = [
+            MagicMock(json=lambda: {"jwks_uri": f"{OUR_KEYCLOAK}/realms/fsw/protocol/openid-connect/certs"}),
+            MagicMock(json=lambda: {"keys": [{"kid": "key1", "kty": "RSA"}]}),
+        ]
+        mock_from_jwk.return_value = "the-key"
+
+        # A trailing slash on the configured URL must not change the answer.
+        with app.test_request_context():
+            get_public_key(f"{OUR_KEYCLOAK}/realms/fsw", "key1", OUR_KEYCLOAK + "/")
+
+        assert mock_get.call_args_list[0].args[0].startswith(f"{OUR_KEYCLOAK}/realms/fsw/")
+
+    @patch("optibroker_common.authentication.requests.get")
+    def test_a_realm_that_sends_us_elsewhere_for_the_key_is_refused(self, mock_get, app):
+        # Our server answered, but pointed at someone else's JWKS.
+        mock_get.return_value = MagicMock(
+            json=lambda: {"jwks_uri": "https://attacker.example.com/certs"}
+        )
+
+        with app.test_request_context(), pytest.raises(Exception) as err:
+            get_public_key(f"{OUR_KEYCLOAK}/realms/fsw", "key1", OUR_KEYCLOAK)
+
+        assert "401" in str(err.value)
+        # Fetched the configuration, but never the key.
+        assert mock_get.call_count == 1
+
+    @patch("optibroker_common.authentication.jwt.algorithms.RSAAlgorithm.from_jwk")
+    @patch("optibroker_common.authentication.requests.get")
+    def test_a_keycloak_on_localhost_is_still_rewritten(self, mock_get, mock_from_jwk, app):
+        # Tokens minted against a Keycloak reached on localhost carry that as
+        # their issuer; that mapping predates this fix and still has to work.
+        mock_get.side_effect = [
+            MagicMock(json=lambda: {"jwks_uri": f"{OUR_KEYCLOAK}/realms/fsw/certs"}),
+            MagicMock(json=lambda: {"keys": [{"kid": "key1", "kty": "RSA"}]}),
+        ]
+        mock_from_jwk.return_value = "the-key"
+
+        with app.test_request_context():
+            result = get_public_key("http://localhost:8080/realms/fsw", "key1", OUR_KEYCLOAK)
+
+        assert result == "the-key"

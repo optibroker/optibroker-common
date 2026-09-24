@@ -61,15 +61,66 @@ def get_bearer_token():
         abort(401, description="Authorization header is missing or invalid.")
 
 
+def realm_from_trusted_issuer(issuer_url, keycloak_server_url):
+    """The realm named by `issuer_url`, or 401 if that issuer is not ours.
+
+    The issuer claim arrives on an UNVERIFIED token -- it is read before any
+    signature has been checked, because it is what tells us which key to check
+    the signature with. So it is an attacker's string until proven otherwise.
+
+    Taking it at its word meant anyone could host their own JWKS, set
+    iss to https://their-server/realms/<a-real-realm>, sign a token with their
+    own key, and have us fetch their key and accept it. The realm allow-list did
+    not help: the realm name was read from that same string, so any real realm
+    passed. It was a complete authentication bypass on every service using this
+    library -- the attacker chose the tenant and the roles.
+
+    An issuer is ours only when it is exactly <keycloak_server_url>/realms/<realm>
+    for one realm segment. Requiring "/realms/" immediately after the configured
+    URL is what stops a look-alike host: https://our-keycloak.example.com.evil
+    does not match https://our-keycloak.example.com + "/realms/".
+    """
+    server = (keycloak_server_url or '').rstrip('/')
+    if not server:
+        abort(401, description="Untrusted token issuer.")
+
+    # Tokens minted against a Keycloak reached on localhost carry that as their
+    # issuer. Rewritten before the check, never after it.
+    issuer = (issuer_url or '').replace('http://localhost:8080', server)
+
+    prefix = f"{server}/realms/"
+    if not issuer.startswith(prefix):
+        logger.warning("Rejected token from untrusted issuer: %s", issuer)
+        abort(401, description="Untrusted token issuer.")
+
+    realm = issuer[len(prefix):]
+    # Exactly one path segment. Anything else is either not a Keycloak issuer or
+    # is reaching for somewhere else on the server.
+    if not realm or '/' in realm or realm in ('.', '..'):
+        logger.warning("Rejected token from untrusted issuer: %s", issuer)
+        abort(401, description="Untrusted token issuer.")
+
+    return realm
+
+
 def get_public_key(issuer_url, kid, keycloak_server_url):
     """
     Retrieve the public key from Keycloak's OpenID configuration based on the key ID (kid).
     """
-    issuer_url = issuer_url.replace('http://localhost:8080', keycloak_server_url)
-    openid_config_url = f"{issuer_url}/.well-known/openid-configuration"
+    # Built from the Keycloak we are configured to trust and the realm it named,
+    # never from the URL in the token.
+    realm = realm_from_trusted_issuer(issuer_url, keycloak_server_url)
+    server = keycloak_server_url.rstrip('/')
+    openid_config_url = f"{server}/realms/{realm}/.well-known/openid-configuration"
     try:
         openid_config = requests.get(openid_config_url).json()
         jwks_uri = openid_config['jwks_uri']
+        # Our own Keycloak answered, so its jwks_uri is trustworthy -- but a
+        # misconfigured or compromised realm should not be able to send us
+        # somewhere else for the key either.
+        if not jwks_uri.startswith(f"{server}/"):
+            logger.warning("Keycloak returned a JWKS URI outside %s: %s", server, jwks_uri)
+            abort(401, description="Untrusted token issuer.")
         jwks = requests.get(jwks_uri).json()
 
         for key in jwks['keys']:
@@ -173,7 +224,9 @@ def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=Non
     if verified_payload.get('auth_method') != "secret_key":
         user_id = verified_payload.get("sub")
         roles = verified_payload.get("realm_access", {}).get("roles", [])
-        realm_name = verified_payload.get("iss").split("/realms/")[-1]
+        # Same rule as the key fetch: the realm is whatever our own Keycloak
+        # named, not whatever the string happened to end with.
+        realm_name = realm_from_trusted_issuer(verified_payload.get("iss"), keycloak_server_url)
 
         if not user_id:
             abort(401, description="Invalid token: Missing user_id.")
