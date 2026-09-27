@@ -2,6 +2,8 @@ import base64
 import json
 import logging
 import os
+import threading
+import time
 
 import jwt
 import requests
@@ -103,14 +105,47 @@ def realm_from_trusted_issuer(issuer_url, keycloak_server_url):
     return realm
 
 
-def get_public_key(issuer_url, kid, keycloak_server_url):
-    """
-    Retrieve the public key from Keycloak's OpenID configuration based on the key ID (kid).
-    """
-    # Built from the Keycloak we are configured to trust and the realm it named,
-    # never from the URL in the token.
-    realm = realm_from_trusted_issuer(issuer_url, keycloak_server_url)
-    server = keycloak_server_url.rstrip('/')
+# ── Caches ─────────────────────────────────────────────────────────────────
+#
+# Verifying a token used to cost four round trips to Keycloak on every request:
+# an admin login and the realm list (for get_realms_func), then the realm's
+# openid-configuration and its JWKS. About 0.7s per call, on every API (OB-78).
+#
+# Both are now cached per process. What is cached, and what is not:
+#
+# - Signing keys, per (trusted server, realm). The realm comes from
+#   realm_from_trusted_issuer(), which has already refused any issuer that is
+#   not ours, so an attacker-chosen `iss` can never select, populate or poison
+#   an entry (OB-55). A key is only ever looked up in its own realm's entry.
+# - The valid-realm list, per get_realms_func.
+#
+# A miss is never trusted as final. An unknown `kid` (keys rotated, or the realm
+# was deleted and recreated) and an unknown realm (just onboarded) each trigger
+# a refetch -- but at most once per REFRESH_MIN_INTERVAL for that entry, so a
+# caller spraying made-up kids or realm names cannot turn the cache into a way
+# of hammering Keycloak. Within that window the miss is simply refused.
+#
+# A realm that drops out of the list on refresh also loses its cached keys, so a
+# deleted tenant's tokens stop verifying within REALMS_TTL.
+
+JWKS_TTL = int(os.environ.get("KEYCLOAK_JWKS_CACHE_TTL", "300"))
+REALMS_TTL = int(os.environ.get("KEYCLOAK_REALMS_CACHE_TTL", "60"))
+REFRESH_MIN_INTERVAL = int(os.environ.get("KEYCLOAK_CACHE_MIN_REFRESH", "10"))
+
+_cache_lock = threading.Lock()
+_jwks_cache = {}    # (server, realm) -> {"keys": {kid: jwk_dict}, "fetched": t}
+_realms_cache = {}  # get_realms_func -> {"realms": set, "fetched": t}
+
+
+def clear_caches():
+    """Forget every cached key and realm list (tests, or after a known rotation)."""
+    with _cache_lock:
+        _jwks_cache.clear()
+        _realms_cache.clear()
+
+
+def _fetch_jwks(server, realm):
+    """The realm's signing keys, straight from our own Keycloak, as {kid: jwk}."""
     openid_config_url = f"{server}/realms/{realm}/.well-known/openid-configuration"
     try:
         openid_config = requests.get(openid_config_url).json()
@@ -122,16 +157,68 @@ def get_public_key(issuer_url, kid, keycloak_server_url):
             logger.warning("Keycloak returned a JWKS URI outside %s: %s", server, jwks_uri)
             abort(401, description="Untrusted token issuer.")
         jwks = requests.get(jwks_uri).json()
-
-        for key in jwks['keys']:
-            if key['kid'] == kid:
-                if isinstance(key, dict):
-                    key = json.dumps(key)
-                return jwt.algorithms.RSAAlgorithm.from_jwk(key)
     except requests.RequestException as req_err:
         abort(503, description=f"Failed to retrieve OpenID configuration: {req_err}")
+    return {key['kid']: key for key in jwks['keys']}
+
+
+def get_public_key(issuer_url, kid, keycloak_server_url):
+    """
+    Retrieve the public key for `kid` from the realm named by a trusted issuer.
+    """
+    # Built from the Keycloak we are configured to trust and the realm it named,
+    # never from the URL in the token.
+    realm = realm_from_trusted_issuer(issuer_url, keycloak_server_url)
+    server = keycloak_server_url.rstrip('/')
+    cache_key = (server, realm)
+    now = time.monotonic()
+
+    with _cache_lock:
+        entry = _jwks_cache.get(cache_key)
+        fresh = entry is not None and now - entry["fetched"] < JWKS_TTL
+        if fresh and kid in entry["keys"]:
+            key = entry["keys"][kid]
+            return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+        # Stale, or a kid we have not seen. Refetch -- unless we did so moments
+        # ago, in which case the kid is simply unknown.
+        may_refetch = entry is None or now - entry["fetched"] >= REFRESH_MIN_INTERVAL
+
+    if may_refetch:
+        keys = _fetch_jwks(server, realm)
+        with _cache_lock:
+            _jwks_cache[cache_key] = {"keys": keys, "fetched": time.monotonic()}
+        if kid in keys:
+            return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(keys[kid]))
 
     abort(400, description="Public key not found.")
+
+
+def realm_is_valid(realm_name, get_realms_func):
+    """Whether `realm_name` is in get_realms_func()'s list, cached for REALMS_TTL.
+
+    A realm missing from a fresh list triggers one rate-limited refresh, so a
+    newly onboarded tenant is accepted at once. A realm gone from the refreshed
+    list also has its signing keys evicted.
+    """
+    now = time.monotonic()
+    with _cache_lock:
+        entry = _realms_cache.get(get_realms_func)
+        if entry is not None and now - entry["fetched"] < REALMS_TTL and realm_name in entry["realms"]:
+            return True
+        may_refetch = entry is None or now - entry["fetched"] >= REFRESH_MIN_INTERVAL \
+            or now - entry["fetched"] >= REALMS_TTL
+        previous = entry["realms"] if entry else set()
+
+    if not may_refetch:
+        return False
+
+    realms = set(get_realms_func())
+    with _cache_lock:
+        _realms_cache[get_realms_func] = {"realms": realms, "fetched": time.monotonic()}
+        for gone in previous - realms:
+            for cache_key in [k for k in _jwks_cache if k[1] == gone]:
+                del _jwks_cache[cache_key]
+    return realm_name in realms
 
 
 def verify_jwt_or_secret_key(algorithm, keycloak_server_url, secret_keys=None):
@@ -231,7 +318,7 @@ def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=Non
         if not user_id:
             abort(401, description="Invalid token: Missing user_id.")
 
-        if get_realms_func is not None and realm_name not in get_realms_func():
+        if get_realms_func is not None and not realm_is_valid(realm_name, get_realms_func):
             abort(401, description="Invalid Realm: not in list of valid Realms.")
 
         # When the token was minted via impersonation (Keycloak token exchange),
