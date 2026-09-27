@@ -127,6 +127,15 @@ def realm_from_trusted_issuer(issuer_url, keycloak_server_url):
 #
 # A realm that drops out of the list on refresh also loses its cached keys, so a
 # deleted tenant's tokens stop verifying within REALMS_TTL.
+#
+# The two windows this leaves, both deliberate and both bounded:
+# - Key rotation: a token signed with a brand-new kid is refused until the next
+#   permitted refetch -- at most REFRESH_MIN_INTERVAL (10s). Unknown-kid spraying
+#   cannot stretch it, since the spray is itself what refetches (and learns the
+#   new key). Keycloak keeps the old key active alongside a new one by default,
+#   so a rotation done that way sees no refusals at all.
+# - Offboarding: a deleted tenant's still-unexpired tokens keep verifying for up
+#   to REALMS_TTL (60s) after the realm is removed (QA measured 61s).
 
 JWKS_TTL = int(os.environ.get("KEYCLOAK_JWKS_CACHE_TTL", "300"))
 REALMS_TTL = int(os.environ.get("KEYCLOAK_REALMS_CACHE_TTL", "60"))
