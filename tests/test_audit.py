@@ -35,7 +35,7 @@ class TestAuditLogger:
         assert message["action_type"] == "create"
         assert message["event"] == "payment_created"
         assert message["api"] == "payments-api"
-        assert message["jwt"] == "tok123"
+        assert "jwt" not in message  # OB-262: the request's credentials are never sent
         assert message["route"] == "/api/payments"
         assert message["method"] == "post"
         assert "event_id" in message

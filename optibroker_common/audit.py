@@ -2,7 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from flask import request
+from flask import g, has_request_context, request
 
 from optibroker_common.authentication import get_impersonation_context
 
@@ -35,6 +35,24 @@ def audit_actor(current_user):
     return real_actor, None
 
 
+def _verified_identity():
+    """Who the request was authenticated as, from the current_user the
+    get_current_user decorator verified, or None outside one. Never the
+    request's credentials (OB-262)."""
+    current_user = getattr(g, 'optibroker_current_user', None) if has_request_context() else None
+    if not isinstance(current_user, dict):
+        return None
+    secret_key = current_user.get('auth_method') == 'secret_key'
+    return {
+        'auth_method': 'secret_key' if secret_key else 'bearer',
+        'user_id': current_user.get('user') if secret_key else current_user.get('user_id'),
+        'realm': current_user.get('realm'),
+        'name': None if secret_key else current_user.get('name'),
+        'is_impersonating': bool(current_user.get('is_impersonating')),
+        'real_actor_id': None if secret_key else current_user.get('real_actor_id'),
+    }
+
+
 class AuditLogger:
     def __init__(self, sender):
         """
@@ -57,17 +75,35 @@ class AuditLogger:
             api_name: Name of the API that generated the event.
         """
         try:
-            jwt_token = request.headers.get("Authorization", "").replace("Bearer ", "")
             payload = request.get_json(silent=True) or {}
 
             # Capture the real actor behind any impersonation so the audit trail
             # can record "Steve did this while acting as Sarah". For ordinary
             # requests is_impersonating is False and real_actor_id is the caller.
-            impersonation = get_impersonation_context()
+            verified = _verified_identity()
+            if verified is not None:
+                impersonation = {
+                    "is_impersonating": verified["is_impersonating"],
+                    "real_actor_id": verified["real_actor_id"] or verified["user_id"],
+                    "impersonated_user_id": verified["user_id"] if verified["is_impersonating"] else None,
+                }
+            else:
+                impersonation = get_impersonation_context()
+
+            # Who acted, from the verified current_user (OB-262). The message
+            # used to carry the raw Authorization header ("jwt"): a bearer
+            # token, or for a service the secret key itself, sent to the
+            # audit store with every event. No credential is sent now.
+            identity = verified or {
+                "auth_method": None, "user_id": None, "realm": None, "name": None,
+            }
 
             message = {
                 "event_id": str(uuid.uuid4()),
-                "jwt": jwt_token,
+                "auth_method": identity["auth_method"],
+                "user_id": identity["user_id"],
+                "realm": identity["realm"],
+                "name": identity["name"],
                 "object_id": object_id,
                 "object_type": object_type,
                 "action_type": action_type,
