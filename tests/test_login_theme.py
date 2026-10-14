@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from optibroker_common.login_theme.engine import (
-    BRANDING_FILE, DEFAULT_COLOUR, FONT_FILES, FONTS, FONTS_DIR, GENERATED_MARKER,
+    BRANDING_FILE, DEFAULT_BRANDING, DEFAULT_COLOUR, FONT_FILES, FONTS, FONTS_DIR, GENERATED_MARKER, TEXT_FIELDS,
     _message_unvalue, _message_value, _text_shade, decode_image, font_files,
     normalise_branding, render_theme, theme_tokens,
 )
@@ -180,6 +180,74 @@ class TestBranding:
         assert _message_value("O'Brien {Finance}") == "O''Brien '{'Finance'}'"
         assert _message_value("Acme\nLtd\\") == "Acme Ltd\\\\"
         assert _message_unvalue(_message_value("O'Brien {Finance} \\")) == "O'Brien {Finance} \\"
+
+
+class TestLogoSize:
+    """The company picks the logo's height and width; blank keeps its proportions."""
+
+    def test_unset_is_the_standard_size(self):
+        assert (DEFAULT_BRANDING["logo_height"], DEFAULT_BRANDING["logo_width"]) == (None, None)
+        tokens = theme_tokens({})
+        assert (tokens["LOGO_HEIGHT"], tokens["LOGO_PANEL_HEIGHT"]) == ("40px", "48px")
+        assert (tokens["LOGO_WIDTH"], tokens["LOGO_MAX_WIDTH"]) == ("auto", "160px")
+
+    def test_sizes_are_whole_pixels_within_bounds(self):
+        branding = normalise_branding({"logo_height": "64", "logo_width": 250.4})
+        assert (branding["logo_height"], branding["logo_width"]) == (64, 250)
+        assert normalise_branding({"logo_height": 5})["logo_height"] == 16
+        assert normalise_branding({"logo_height": 999})["logo_height"] == 200
+        assert normalise_branding({"logo_width": 9000})["logo_width"] == 480
+
+    @pytest.mark.parametrize("value", [None, "", 0, -3, "big", True, [40], "nan", "inf"])
+    def test_blank_or_nonsense_means_unset(self, value):
+        branding = normalise_branding({"logo_height": value, "logo_width": value})
+        assert (branding["logo_height"], branding["logo_width"]) == (None, None)
+
+    def test_sizes_are_not_wording(self):
+        assert "logo_height" not in TEXT_FIELDS and "logo_width" not in TEXT_FIELDS
+        messages = render_theme({"logo_height": 60})["login/messages/messages_en.properties"].decode().replace("\r", "")
+        assert "fswLogoHeight" not in messages and "=60\n" not in messages
+
+    def test_height_alone_keeps_the_proportions_on_the_card_and_panel(self):
+        tokens = theme_tokens({"logo_height": 60})
+        assert (tokens["LOGO_HEIGHT"], tokens["LOGO_PANEL_HEIGHT"]) == ("60px", "60px")
+        assert tokens["LOGO_WIDTH"] == "auto"
+        assert tokens["LOGO_MAX_WIDTH"] == "240px"  # four times the height, as 160px is to 40px
+        assert theme_tokens({"logo_height": 200})["LOGO_MAX_WIDTH"] == "480px"
+        assert theme_tokens({"logo_height": 16})["LOGO_MAX_WIDTH"] == "160px"
+
+    def test_width_alone_keeps_the_proportions(self):
+        tokens = theme_tokens({"logo_width": 300})
+        assert (tokens["LOGO_HEIGHT"], tokens["LOGO_PANEL_HEIGHT"]) == ("auto", "auto")
+        assert (tokens["LOGO_WIDTH"], tokens["LOGO_MAX_WIDTH"]) == ("300px", "300px")
+
+    def test_both_set_is_a_box_the_logo_fits_inside(self):
+        tokens = theme_tokens({"logo_height": 50, "logo_width": 120})
+        assert (tokens["LOGO_HEIGHT"], tokens["LOGO_WIDTH"], tokens["LOGO_MAX_WIDTH"]) == ("50px", "120px", "120px")
+
+    def test_the_stylesheet_uses_the_size(self):
+        css = render_theme({"logo_height": 72, "logo_width": 200})["login/resources/css/style.css"].decode()
+        assert "--logo-height: 72px;" in css and "--logo-panel-height: 72px;" in css
+        assert "--logo-width: 200px;" in css and "--logo-max-width: 200px;" in css
+        # The authenticator page's top bar stays compact whatever is chosen.
+        assert re.search(r"\.fsw-topbar-brand \.fsw-mark-img \{[^}]*height: 32px", css)
+
+    def test_a_size_change_gets_a_new_stylesheet_url(self):
+        def version(branding):
+            return re.search(r'css/style\.css\?v=([0-9a-f]{12})"',
+                             render_theme(branding)["login/template.ftl"].decode()).group(1)
+        assert version({"logo_height": 60}) != version({})
+
+    def test_a_partial_update_keeps_the_size_and_null_clears_it(self, themes_bucket):
+        client = FakeS3()
+        service = _service(client)
+        service.publish("acme", {"logo_height": 70, "logo_width": 210})
+        service.publish("acme", {"tagline": "Since 1990"})
+        stored = json.loads(client.text(f"acme/{BRANDING_FILE}"))
+        assert (stored["logo_height"], stored["logo_width"]) == (70, 210)
+        service.publish("acme", {"logo_width": None})
+        stored = json.loads(client.text(f"acme/{BRANDING_FILE}"))
+        assert (stored["logo_height"], stored["logo_width"]) == (70, None)
 
 
 class TestFonts:
