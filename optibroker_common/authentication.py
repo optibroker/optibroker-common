@@ -305,6 +305,28 @@ def extract_actor(payload):
     return None, False
 
 
+def _claim(payload, key):
+    value = payload.get(key)
+    if isinstance(value, str):
+        value = value.strip()
+    return value or None
+
+
+def display_name_claims(payload, is_impersonating):
+    """``(name, preferred_username)`` for attributing what the caller does.
+
+    From the verified token: ``name``, else ``given_name`` + ``family_name``,
+    and ``preferred_username``. Under Keycloak token-exchange impersonation
+    (an ``act`` claim) the token's name claims are the impersonated subject's,
+    not the actor's, so both are None rather than credit the subject with
+    what the actor did; ``real_actor_id`` still names the actor by id.
+    """
+    if is_impersonating:
+        return None, None
+    given = ' '.join(p for p in (_claim(payload, 'given_name'), _claim(payload, 'family_name')) if p)
+    return _claim(payload, 'name') or given or None, _claim(payload, 'preferred_username')
+
+
 def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=None):
     """
     Extract user permissions from the verified JWT payload.
@@ -335,12 +357,19 @@ def get_current_user_permissions(algorithm, keycloak_server_url, secret_keys=Non
         # acting. For non-impersonated tokens the two are the same, so callers
         # can always attribute audit to real_actor_id.
         real_actor_id, is_impersonating = extract_actor(verified_payload)
+        # The caller's display name, for attribution (activity authors, who
+        # decided something). Only ever from the verified token. Application-
+        # level impersonation below keeps it, because the bearer token there is
+        # the actor's own, so it names the real actor.
+        name, preferred_username = display_name_claims(verified_payload, is_impersonating)
         current_user = {
             "user_id": user_id,
             "permissions": roles,
             "realm": realm_name,
             "is_impersonating": is_impersonating,
             "real_actor_id": real_actor_id or user_id,
+            "name": name,
+            "preferred_username": preferred_username,
         }
 
         # Application-level impersonation: if the caller also presents a valid,
