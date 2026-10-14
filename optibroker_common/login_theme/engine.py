@@ -56,6 +56,8 @@ DEFAULT_BRANDING = {
     "footer_text": "All rights reserved.",
     "help_url": "",
     "show_illustration": True,
+    "logo_height": None,                # px; None is the theme's own size (see LOGO_SIZES)
+    "logo_width": None,                 # px; None keeps the logo's proportions
     "texts": {},                        # message key -> the company's own wording (see theme_text.py)
 }
 
@@ -66,6 +68,13 @@ TEXT_FIELDS = tuple(
     k for k, v in DEFAULT_BRANDING.items() if isinstance(v, str) and k not in COLOUR_FIELDS + FONT_FIELDS
 )
 MAX_TEXT = 300
+
+# The logo's size, in whole pixels, on the login card and the login panel. A
+# size left blank keeps the logo's proportions; both blank is the theme's own
+# size (40px high on the card, 48px on the panel, at most 160px wide). Both
+# set make a box the logo fits inside without stretching. The authenticator
+# page's top bar is a slim header and keeps its own 32px whatever is chosen.
+LOGO_SIZES = {"logo_height": (16, 200), "logo_width": (16, 480)}
 
 SYSTEM_STACKS = {
     "serif": "'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif",
@@ -200,6 +209,34 @@ def _safe_url(url):
     return ""
 
 
+def _logo_size(value, bounds):
+    """Whole pixels within bounds, or None for blank, zero or anything not a number."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < number < float("inf"):
+        return None
+    low, high = bounds
+    return min(max(round(number), low), high)
+
+
+def logo_size_tokens(height, width):
+    """The stylesheet's logo sizes for a normalised height and width (px or None)."""
+    if height:
+        max_width = width or min(LOGO_SIZES["logo_width"][1], max(160, 4 * height))
+    else:
+        max_width = width or 160
+    return {
+        "LOGO_HEIGHT": f"{height}px" if height else ("auto" if width else "40px"),
+        "LOGO_PANEL_HEIGHT": f"{height}px" if height else ("auto" if width else "48px"),
+        "LOGO_WIDTH": f"{width}px" if width else "auto",
+        "LOGO_MAX_WIDTH": f"{max_width}px",
+    }
+
+
 def normalise_branding(data):
     """Defaults overlaid with whatever `data` validly sets. Unknown keys are dropped,
     an invalid colour becomes the default (or blank, to be derived), text is
@@ -219,6 +256,8 @@ def normalise_branding(data):
             branding[key] = data[key]
     if "show_illustration" in data:
         branding["show_illustration"] = bool(data["show_illustration"])
+    for key, bounds in LOGO_SIZES.items():
+        branding[key] = _logo_size(data.get(key), bounds)
     branding["texts"] = _normalise_texts(data.get("texts"))
     return branding
 
@@ -288,6 +327,7 @@ def theme_tokens(branding, images=None):
         # style.css lives in login/resources/css; the fonts beside it in ../fonts.
         "FONT_FACES": font_faces_css([branding["heading_font"], branding["body_font"]], "../fonts/"),
         "SHOW_ILLUSTRATION": "true" if branding["show_illustration"] else "false",
+        **logo_size_tokens(branding["logo_height"], branding["logo_width"]),
     }
     for key in TEXT_FIELDS:
         tokens[key.upper()] = _message_value(branding[key])

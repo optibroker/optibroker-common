@@ -26,6 +26,11 @@
   --heading-font: @@HEADING_FONT@@;
   --body-font: @@BODY_FONT@@;
   --heading-weight: @@HEADING_WEIGHT@@;
+  /* The company's logo size: "auto" on a side left blank keeps its proportions. */
+  --logo-height: @@LOGO_HEIGHT@@;
+  --logo-panel-height: @@LOGO_PANEL_HEIGHT@@;
+  --logo-width: @@LOGO_WIDTH@@;
+  --logo-max-width: @@LOGO_MAX_WIDTH@@;
   --text: #111827;
   --text-2: #344054;
   --muted: #667085;
@@ -56,7 +61,10 @@ img { max-width: 100%; }
 }
 .fsw-brand { color: var(--brand-text); font-size: 18px; margin-bottom: 36px; }
 .fsw-mark { width: 40px; height: 40px; flex: none; }
-.fsw-mark-img { width: auto; max-width: 160px; object-fit: contain; }
+.fsw-mark-img {
+  height: var(--logo-height); width: var(--logo-width);
+  max-width: min(var(--logo-max-width), 100%); max-height: 200px; object-fit: contain;
+}
 
 /* ===== Login: brand panel beside the card ===== */
 .fsw-login { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
@@ -70,6 +78,7 @@ img { max-width: 100%; }
 }
 .fsw-panel-brand { font-size: 21px; position: relative; z-index: 1; }
 .fsw-panel-brand .fsw-mark { width: 48px; height: 48px; }
+.fsw-panel-brand .fsw-mark-img { height: var(--logo-panel-height); width: var(--logo-width); }
 .fsw-panel-copy { position: relative; z-index: 1; margin-top: clamp(48px, 12vh, 112px); max-width: 30rem; }
 .fsw-headline {
   margin: 0; font-family: var(--heading-font); font-weight: var(--heading-weight);
@@ -252,7 +261,7 @@ img { max-width: 100%; }
 }
 .fsw-topbar-brand { font-size: 20px; }
 .fsw-topbar-brand .fsw-mark { width: 30px; height: 30px; }
-.fsw-topbar-brand .fsw-mark-img { height: 32px; }
+.fsw-topbar-brand .fsw-mark-img { height: 32px; width: auto; max-width: 160px; }  /* compact whatever size is chosen */
 
 .fsw-setup { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 44px 0 32px; }
 .fsw-setup-title { margin: 0; text-align: center; font-size: clamp(28px, 3vw, 36px); font-weight: 700; letter-spacing: -.015em; line-height: 1.2; }
