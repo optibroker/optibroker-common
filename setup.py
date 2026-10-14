@@ -15,7 +15,7 @@ def _data_files(package_dir, *folders):
 
 setup(
     name="optibroker-common",
-    version="1.2.0",
+    version="1.3.0",
     packages=find_packages(),
     package_data={
         "optibroker_common.login_theme": _data_files("optibroker_common/login_theme", "theme", "fonts"),
