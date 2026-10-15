@@ -113,6 +113,18 @@ class TestRender:
         assert b"--heading-font: Inter" in files["login/resources/css/style.css"]
         assert b"fswShowIllustration=false" in files["login/messages/messages_en.properties"]
 
+    def test_the_company_name_beside_the_logo_can_be_turned_off(self):
+        assert DEFAULT_BRANDING["show_company_name"] is True
+        assert b"fswShowCompanyName=true" in render_theme({})["login/messages/messages_en.properties"]
+        files = render_theme({"company_name": "Acme", "show_company_name": False})
+        messages = files["login/messages/messages_en.properties"]
+        assert b"fswShowCompanyName=false" in messages
+        # Only the name beside the logo goes: the footer, the tab title and the
+        # emails still name the company.
+        assert b"companyName=Acme" in messages
+        assert b"fsw-brand-name-hidden" in files["login/template.ftl"]
+        assert b".fsw-brand-name-hidden" in files["login/resources/css/style.css"]
+
     def test_nothing_of_finance_south_west_is_left(self):
         for body in render_theme({"company_name": "Acme"}).values():
             assert b"Finance South West" not in body and b"FinanceSouthWest" not in body
