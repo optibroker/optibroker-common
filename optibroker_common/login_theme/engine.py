@@ -56,7 +56,8 @@ DEFAULT_BRANDING = {
     "footer_text": "All rights reserved.",
     "help_url": "",
     "show_illustration": True,
-    "logo_height": None,                # px; None is the theme's own size (see LOGO_SIZES)
+    "show_company_name": True,          # beside the logo; off when the logo already says it
+    "logo_height": None,               # px; None is the theme's own size (see LOGO_SIZES)
     "logo_width": None,                 # px; None keeps the logo's proportions
     "texts": {},                        # message key -> the company's own wording (see theme_text.py)
 }
@@ -254,8 +255,9 @@ def normalise_branding(data):
     for key in FONT_FIELDS:
         if data.get(key) in FONTS:
             branding[key] = data[key]
-    if "show_illustration" in data:
-        branding["show_illustration"] = bool(data["show_illustration"])
+    for key in ("show_illustration", "show_company_name"):
+        if key in data:
+            branding[key] = bool(data[key])
     for key, bounds in LOGO_SIZES.items():
         branding[key] = _logo_size(data.get(key), bounds)
     branding["texts"] = _normalise_texts(data.get("texts"))
@@ -327,6 +329,7 @@ def theme_tokens(branding, images=None):
         # style.css lives in login/resources/css; the fonts beside it in ../fonts.
         "FONT_FACES": font_faces_css([branding["heading_font"], branding["body_font"]], "../fonts/"),
         "SHOW_ILLUSTRATION": "true" if branding["show_illustration"] else "false",
+        "SHOW_COMPANY_NAME": "true" if branding["show_company_name"] else "false",
         **logo_size_tokens(branding["logo_height"], branding["logo_width"]),
     }
     for key in TEXT_FIELDS:

@@ -40,8 +40,12 @@
   </#if>
 </#macro>
 
+<#-- The logo and the company name beside it. A company whose logo already
+     carries its name turns the name off; it is then hidden, not removed, so
+     a screen reader still says whose page this is. -->
 <#macro brand logoKey="fswLogo" cls="fsw-brand">
-  <div class="${cls}"><@brandMark logoKey=logoKey/><span class="fsw-brand-name">${msg("companyName")}</span></div>
+  <#local nameCls = (msg("fswShowCompanyName") == "false")?then("fsw-brand-name fsw-brand-name-hidden", "fsw-brand-name")>
+  <div class="${cls}"><@brandMark logoKey=logoKey/><span class="${nameCls}">${msg("companyName")}</span></div>
 </#macro>
 
 <#macro icon name>
