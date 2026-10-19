@@ -51,6 +51,17 @@ class TestAuditLogger:
         message = mock_sender.send_message.call_args[0][0]
         assert message["metadata"]["payload"] == {}
 
+    def test_log_records_user_agent(self, app):
+        mock_sender = MagicMock()
+        audit = AuditLogger(sender=mock_sender)
+        ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+
+        with app.test_request_context("/api/test", method="GET", headers={"User-Agent": ua}):
+            audit.log("obj-1", "test", "read", "test_read", "test-api")
+
+        message = mock_sender.send_message.call_args[0][0]
+        assert message["metadata"]["user_agent"] == ua
+
     def test_log_catches_exceptions(self, app):
         mock_sender = MagicMock()
         mock_sender.send_message.side_effect = Exception("SQS down")

@@ -78,6 +78,9 @@ class AuditLogger:
                 "impersonated_user_id": impersonation["impersonated_user_id"],
                 "metadata": {
                     "user_ip": request.remote_addr,
+                    # Raw header, so mobile vs desktop is decided when the trail
+                    # is read and can be reclassified later. None when absent.
+                    "user_agent": request.headers.get("User-Agent"),
                     "payload": payload
                 },
                 "route": request.path,
