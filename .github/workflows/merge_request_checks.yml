@@ -19,7 +19,7 @@ jobs:
 
     strategy:
       matrix:
-        make-command: ["lint", "unit-test", "safety"]
+        make-command: ["lint", "unit-test", "safety", "requirements-check"]
 
     steps:
       - name: Checkout code
