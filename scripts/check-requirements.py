@@ -7,6 +7,16 @@ supports the repo's Python. That covers `==` pins that have fallen behind and
 upper bounds such as `Werkzeug<3.0`; unpinned and `>=` lines always admit the
 latest, so they pass. `pkg @ git+...@vX` is compared with the newest tag.
 
+A release only becomes required once it has been on PyPI for 48 hours
+(--min-age-hours, or $REQUIREMENTS_MIN_AGE_HOURS), so a bad or compromised
+release has time to be yanked first. A pin on a newer, still-waiting release
+also passes. `--update` moves to the newest release past the wait.
+
+Deliberately strict after that: a release required since the last update
+fails the next PR, and `make requirements-update` is the fix. In GitHub
+Actions each finding is an error annotation on its line of the requirements
+file, and a table in the job summary.
+
 It also fails when requirements_test.txt pins something requirements.txt
 rules out. The test image installs it second, so the tests would run against
 a different version from the one that ships.
@@ -24,6 +34,7 @@ Canonical copy: optibroker-project-config/scripts/check-requirements.py.
 """
 import argparse
 import concurrent.futures
+import datetime
 import json
 import os
 import re
@@ -35,6 +46,9 @@ import urllib.request
 
 FILES = ("requirements.txt", "requirements_test.txt")
 PYPI = os.environ.get("PYPI_JSON_URL", "https://pypi.org/pypi/{name}/json")
+# A release is only required once it has been public this long, so a bad or
+# compromised release has time to be yanked before every PR demands it.
+MIN_AGE_HOURS = float(os.environ.get("REQUIREMENTS_MIN_AGE_HOURS", "48"))
 
 LINE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
@@ -139,12 +153,34 @@ def _python_ok(requires, python):
         return True   # an unreadable requires_python is not this repo's fault
 
 
-def pypi_latest(name, python):
-    """Newest non-yanked final release with a file that installs here."""
+def _released_at(files):
+    """When a release was published: its earliest file upload."""
+    times = []
+    for f in files:
+        stamp = f.get("upload_time_iso_8601") or f.get("upload_time")
+        if stamp:
+            stamp = stamp.replace("Z", "+00:00")
+            when = datetime.datetime.fromisoformat(stamp)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.timezone.utc)
+            times.append(when)
+    return min(times) if times else None
+
+
+def pypi_latest(name, python, min_age_hours=0, now=None):
+    """-> (required, required_text, newer).
+
+    `required` is the newest non-yanked final release that installs on this
+    Python and has been public for `min_age_hours`; `newer` lists the
+    installable releases younger than that, which are accepted but not yet
+    required. `required` is None when every release is still that young.
+    """
     data = _get_json(PYPI.format(name=name))
     if data is None:
         raise LookupError(f"PyPI has no project named {name!r}")
-    best = None
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(hours=min_age_hours)
+    best, newer, seen = None, [], False
     for text, files in data.get("releases", {}).items():
         parsed = parse_version(text)
         if not parsed or parsed[1]:
@@ -153,12 +189,19 @@ def pypi_latest(name, python):
         if not any(_python_ok(f.get("requires_python"), python)
                    for f in live):
             continue
+        seen = True
+        released = _released_at(live)
+        if released is not None and released > cutoff:
+            newer.append(parsed[0])
+            continue
         if best is None or _cmp(parsed[0], best[0]) > 0:
             best = (parsed[0], text)
-    if best is None:
+    if not seen:
         raise LookupError(
             f"no release of {name} supports Python {fmt(python)}")
-    return best
+    if best is None:
+        return None, None, newer
+    return best[0], best[1], [v for v in newer if _cmp(v, best[0]) > 0]
 
 
 def git_latest(url):
@@ -178,7 +221,7 @@ def git_latest(url):
             best = (parsed[0], tag)
     if best is None:
         raise LookupError(f"{url} has no version tags")
-    return best
+    return best[0], best[1], []
 
 
 # -- requirements files ------------------------------------------------------
@@ -228,12 +271,12 @@ class Finding:
         self.latest_text, self.problem = latest_text, problem
 
 
-def _lookup(key, python):
+def _lookup(key, python, min_age_hours):
     kind, ident = key
     try:
         if kind == "git":
             return key, git_latest(ident), None
-        return key, pypi_latest(ident, python), None
+        return key, pypi_latest(ident, python, min_age_hours), None
     except Exception as e:   # reported, never treated as up to date
         return key, None, f"{ident}: {e}"
 
@@ -243,24 +286,31 @@ def _source(req):
 
 
 def _behind(req, latest):
+    required, text, newer = latest
+    if required is None:
+        return None   # every release is still inside the waiting period
     if req.git:
         ref = req.git.group("ref") or ""
         current = parse_version(ref)
-        if not current or _cmp(current[0], latest[0]) < 0:
+        if not current or _cmp(current[0], required) < 0:
             problem = f"at {ref or 'default branch'}"
-            return Finding(req, latest[0], latest[1], problem)
+            return Finding(req, required, text, problem)
         return None
-    if req.spec and not satisfies(latest[0], req.spec):
-        return Finding(req, latest[0], latest[1], req.spec)
+    # Admitting a newer, still-waiting release counts as current too.
+    if req.spec and not any(satisfies(v, req.spec)
+                            for v in [required, *newer]):
+        return Finding(req, required, text, req.spec)
     return None
 
 
-def check(reqs, python, workers=16):
+def check(reqs, python, workers=16, min_age_hours=MIN_AGE_HOURS):
     """-> (behind, errors); `errors` lists what could not be checked."""
     keys = list(dict.fromkeys(_source(r) for r in reqs))
     latest, errors = {}, []
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-        for key, value, err in pool.map(lambda k: _lookup(k, python), keys):
+        lookups = pool.map(lambda k: _lookup(k, python, min_age_hours),
+                           keys)
+        for key, value, err in lookups:
             latest[key] = value
             if err:
                 errors.append(err)
@@ -344,6 +394,37 @@ def rewrite(path, findings):
         f.write(eol.join(lines) + ending)
 
 
+def _annotate(level, req, title, message):
+    """A GitHub Actions annotation, shown on the line in the PR's diff view."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    where = ""
+    if req is not None:
+        where = (f" file={os.path.basename(req.path)},"
+                 f"line={req.index + 1},title={title}")
+    say(f"::{level}{where}::{message}")
+
+
+def _summary(behind, clashes, errors):
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path or not (behind or clashes or errors):
+        return
+    rows = ["### Requirements", "",
+            "| | file | package | pinned | latest |", "|---|---|---|---|---|"]
+    for f in sorted(behind, key=lambda f: (f.req.path, f.req.key)):
+        rows.append(f"| behind | {os.path.basename(f.req.path)} | "
+                    f"{f.req.name} | `{f.problem}` | {f.latest_text} |")
+    for a, b in clashes:
+        rows.append(f"| **clash** | {os.path.basename(b.path)} | {a.name} | "
+                    f"`{a.spec}` vs `{b.spec}` | |")
+    rows += [f"| could not check | | {e} | | |" for e in errors]
+    if behind:
+        rows += ["", "Run `make requirements-update`, rebuild, run the tests "
+                     "and commit the result."]
+    with open(path, "a", encoding="utf-8") as out:
+        out.write("\n".join(rows) + "\n")
+
+
 def report(behind, clashes, errors):
     if behind:
         width = max(len(f.req.name) for f in behind)
@@ -352,6 +433,11 @@ def report(behind, clashes, errors):
             where = os.path.basename(f.req.path)
             say(f"  BEHIND  {where:22} {f.req.name:{width}}  "
                 f"{f.problem:24} latest {f.latest_text}")
+            _annotate("error", f.req, "Out of date",
+                      f"{f.req.name} {f.problem}: latest is "
+                      f"{f.latest_text}. make requirements-update")
+    elif errors:
+        say("  nothing behind among the requirements that could be checked")
     else:
         say("  every requirement admits its latest release")
     for a, b in clashes:
@@ -359,11 +445,17 @@ def report(behind, clashes, errors):
             f"{a.spec!r}, {os.path.basename(b.path)} says {b.spec!r} -- "
             "the test image installs the second, so tests and production "
             "run different versions")
+        _annotate("error", b, "Requirements clash",
+                  f"{a.name} is {a.spec} in {os.path.basename(a.path)}: the "
+                  "test image installs this file second, so tests and "
+                  "production run different versions")
     for e in errors:
         say(f"  UNKNOWN {e}")
+        _annotate("error", None, "", f"Could not check {e}")
     if errors:
         say("\nCould not check everything. That is not the same as up to "
             "date.")
+    _summary(behind, clashes, errors)
 
 
 def main(argv=None):
@@ -371,6 +463,10 @@ def main(argv=None):
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--update", action="store_true",
                     help="rewrite out-of-date specifiers to the latest")
+    ap.add_argument("--min-age-hours", type=float, default=MIN_AGE_HOURS,
+                    help="hours a release must be public before it is "
+                         "required (default: 48, or "
+                         "$REQUIREMENTS_MIN_AGE_HOURS)")
     ap.add_argument("--python",
                     help="Python to resolve for, e.g. 3.11 "
                          "(default: from the Dockerfile)")
@@ -387,9 +483,10 @@ def main(argv=None):
         return 0
 
     reqs = [r for _, rs in by_file for r in rs]
-    behind, errors = check(reqs, python)
+    behind, errors = check(reqs, python, min_age_hours=args.min_age_hours)
     say(f"Checking {len(reqs)} requirements against the latest releases "
-        f"for Python {fmt(python)}\n")
+        f"for Python {fmt(python)} public for at least "
+        f"{args.min_age_hours:g}h\n")
 
     if args.update and behind:
         for path, _ in by_file:
