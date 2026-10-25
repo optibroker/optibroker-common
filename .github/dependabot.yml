@@ -1,0 +1,15 @@
+# OB-392: requirements-check fails any PR whose pins are behind their latest
+# release. This opens one PR a week that brings them up to date, so upstream
+# releases are absorbed here instead of in feature PRs. optibroker-common is a
+# git dependency Dependabot cannot bump: `make requirements-update` handles it.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+    groups:
+      all-requirements:
+        patterns: ["*"]

@@ -6,3 +6,13 @@ unit-test:
 
 safety:
 	pip-audit
+
+PYTHON ?= python3
+
+# Fails if any requirement is behind its latest release. Runs on every PR.
+requirements-check:
+	$(PYTHON) scripts/check-requirements.py
+
+# Rewrites out-of-date requirements to their latest release.
+requirements-update:
+	$(PYTHON) scripts/check-requirements.py --update
