@@ -4,7 +4,7 @@ from datetime import datetime
 
 from flask import request
 
-from optibroker_common.authentication import get_impersonation_context
+from optibroker_common.authentication import get_impersonation_context, parse_authorization_header
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,10 @@ class AuditLogger:
             api_name: Name of the API that generated the event.
         """
         try:
-            jwt_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+            # Only a Bearer token, parsed the same way authentication does. A
+            # SecretKey header used to be copied in whole, secret and all.
+            scheme, credential = parse_authorization_header(request.headers.get("Authorization"))
+            jwt_token = credential if scheme == "Bearer" else ""
             payload = request.get_json(silent=True) or {}
 
             # Capture the real actor behind any impersonation so the audit trail

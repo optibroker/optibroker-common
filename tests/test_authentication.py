@@ -17,6 +17,9 @@ from optibroker_common.authentication import (
     get_impersonation_context,
     apply_impersonation_context,
     set_impersonation_public_key,
+    parse_authorization_header,
+    secret_key_is_valid,
+    usable_secret_keys,
     IMPERSONATION_HEADER,
 )
 
@@ -534,3 +537,105 @@ class TestIssuerIsPinnedToOurKeycloak:
             result = get_public_key("http://localhost:8080/realms/fsw", "key1", OUR_KEYCLOAK)
 
         assert result == "the-key"
+
+
+class TestParseAuthorizationHeader:
+    @pytest.mark.parametrize("header, expected", [
+        ("Bearer abc", ("Bearer", "abc")),
+        ("SecretKey k1", ("SecretKey", "k1")),
+    ])
+    def test_scheme_and_one_credential(self, header, expected):
+        assert parse_authorization_header(header) == expected
+
+    @pytest.mark.parametrize("header", [
+        None, "", "SecretKey", "SecretKey ", "SecretKey  ", "SecretKey  x", "SecretKey x y",
+        "SecretKey x ", " SecretKey x", "SecretKey\tx", "SecretKey x\t", "Bearer ", "Bearer  tok",
+    ])
+    def test_malformed_is_rejected(self, header):
+        assert parse_authorization_header(header) == (None, None)
+
+
+class TestEmptySecretKeyNeverAuthenticates:
+    """OB-438: an unset secret key ('') used to be an accepted key, and
+    'SecretKey  x' (two spaces) presented exactly that."""
+
+    @pytest.mark.parametrize("header", ["SecretKey  x", "SecretKey ", "SecretKey", "SecretKey  ", "SecretKey \t"])
+    def test_malformed_secret_key_header_is_401(self, app, header):
+        with app.test_request_context(headers={"Authorization": header, "X-Keycloak-Realm": "victim"}):
+            with pytest.raises(Exception) as exc_info:
+                verify_jwt_or_secret_key("RS256", "http://keycloak", secret_keys=["real-key", ""])
+            assert exc_info.value.code == 401
+
+    @pytest.mark.parametrize("configured", [[""], ["", "  "], ["real-key", ""], ["\t"], [None, ""]])
+    def test_empty_configured_key_never_matches(self, app, configured):
+        for header in ("SecretKey  x", "SecretKey ", "SecretKey", "SecretKey \t"):
+            with app.test_request_context(headers={"Authorization": header}):
+                with pytest.raises(Exception) as exc_info:
+                    verify_jwt_or_secret_key("RS256", "http://keycloak", secret_keys=configured)
+                assert exc_info.value.code in (401, 403)
+
+    def test_whitespace_key_cannot_be_presented(self, app):
+        with app.test_request_context(headers={"Authorization": "SecretKey \t"}):
+            with pytest.raises(Exception) as exc_info:
+                verify_jwt_or_secret_key("RS256", "http://keycloak", secret_keys=["\t"])
+            assert exc_info.value.code == 401
+
+    def test_valid_key_still_works_beside_an_empty_one(self, app):
+        with app.test_request_context(headers={"Authorization": "SecretKey real-key", "X-Keycloak-Realm": "r1"}):
+            result = verify_jwt_or_secret_key("RS256", "http://keycloak", secret_keys=["", "real-key"])
+        assert result["auth_method"] == "secret_key"
+        assert result["user"] == "sqs_feeder"
+        assert result["realm"] == "r1"
+
+    def test_wrong_key_is_still_403(self, app):
+        with app.test_request_context(headers={"Authorization": "SecretKey nope"}):
+            with pytest.raises(Exception) as exc_info:
+                verify_jwt_or_secret_key("RS256", "http://keycloak", secret_keys=["", "real-key"])
+            assert exc_info.value.code == 403
+
+    def test_no_keys_configured_rejects(self, app):
+        with app.test_request_context(headers={"Authorization": "SecretKey anything"}):
+            with pytest.raises(Exception) as exc_info:
+                verify_jwt_or_secret_key("RS256", "http://keycloak")
+            assert exc_info.value.code == 403
+
+    def test_has_permission_with_empty_key_rejects(self, app):
+        with app.test_request_context(headers={"Authorization": "SecretKey  x", "X-Keycloak-Realm": "victim"}):
+            with pytest.raises(Exception) as exc_info:
+                has_permission([], "RS256", "http://keycloak", secret_keys=[""], allow_secret_key=True)
+            assert exc_info.value.code == 401
+
+    def test_keys_are_compared_in_constant_time(self, app):
+        with patch("optibroker_common.authentication.hmac.compare_digest", return_value=False) as mock_cmp:
+            assert secret_key_is_valid("x", ["a", "", "b"]) is False
+        assert mock_cmp.call_count == 2
+
+    def test_non_ascii_presented_key_does_not_error(self):
+        assert secret_key_is_valid("clé", ["real-key"]) is False
+        assert secret_key_is_valid("clé", ["clé"]) is True
+
+    def test_usable_secret_keys_drops_unset(self):
+        assert usable_secret_keys(["", " ", "\t\n", None, "k1", "k2"]) == ["k1", "k2"]
+        assert usable_secret_keys(None) == []
+
+
+class TestBearerParsing:
+    @pytest.mark.parametrize("header", ["Bearer", "Bearer ", "Bearer  tok", "Bearer tok extra"])
+    def test_get_bearer_token_rejects_malformed(self, app, header):
+        with app.test_request_context(headers={"Authorization": header}):
+            with pytest.raises(Exception) as exc_info:
+                get_bearer_token()
+            assert exc_info.value.code == 401
+
+    @pytest.mark.parametrize("header", ["Bearer", "Bearer ", "Bearer  tok", "Bearer tok extra"])
+    def test_verify_rejects_malformed_bearer(self, app, header):
+        with app.test_request_context(headers={"Authorization": header}):
+            with pytest.raises(Exception) as exc_info:
+                verify_jwt_or_secret_key("RS256", "http://keycloak")
+            assert exc_info.value.code == 401
+
+    def test_impersonation_context_ignores_malformed_bearer(self, app):
+        token = jwt.encode({"sub": "sarah"}, "secret", algorithm="HS256")
+        with app.test_request_context(headers={"Authorization": f"Bearer  {token}"}):
+            ctx = get_impersonation_context()
+        assert ctx["real_actor_id"] is None

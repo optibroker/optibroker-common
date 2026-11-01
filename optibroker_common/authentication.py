@@ -1,4 +1,5 @@
 import base64
+import hmac
 import json
 import logging
 import os
@@ -52,13 +53,60 @@ def _get_impersonation_public_key():
     return _normalise_pem(os.environ.get("IMPERSONATION_PUBLIC_KEY"))
 
 
+def parse_authorization_header(auth_header):
+    """``(scheme, credential)`` from an Authorization header, or ``(None, None)``.
+
+    The header must be exactly a scheme, one space and one non-empty credential
+    with no whitespace in it. Anything else -- no credential, an empty one, extra
+    spaces or extra parts -- is malformed and yields ``(None, None)``.
+
+    Reading it as ``split(" ")[1]`` turned ``SecretKey  x`` (two spaces) into an
+    empty credential, which matched an unset (empty) configured secret key and
+    authenticated the caller as sqs_feeder in whichever realm they named (OB-438).
+    """
+    if not auth_header:
+        return None, None
+    parts = auth_header.split(" ")
+    if len(parts) != 2:
+        return None, None
+    scheme, credential = parts
+    if not scheme or not credential or any(c.isspace() for c in credential):
+        return None, None
+    return scheme, credential
+
+
+def usable_secret_keys(secret_keys):
+    """The configured secret keys that can actually be presented.
+
+    An empty or whitespace-only key is an unset setting, not a key: it is
+    dropped, so it can never be matched (OB-438).
+    """
+    return [key for key in (secret_keys or []) if isinstance(key, str) and key.strip()]
+
+
+def secret_key_is_valid(presented, secret_keys):
+    """Whether ``presented`` equals one of the usable ``secret_keys``.
+
+    Compared in constant time, and against every key, so neither the timing nor
+    the position of a match says anything about the keys.
+    """
+    if not presented:
+        return False
+    presented_bytes = presented.encode("utf-8")
+    matched = False
+    for key in usable_secret_keys(secret_keys):
+        if hmac.compare_digest(presented_bytes, key.encode("utf-8")):
+            matched = True
+    return matched
+
+
 def get_bearer_token():
     """
     Retrieve the Bearer token from the Authorization header.
     """
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1]
+    scheme, token = parse_authorization_header(request.headers.get("Authorization"))
+    if scheme == "Bearer":
+        return token
     else:
         abort(401, description="Authorization header is missing or invalid.")
 
@@ -239,16 +287,15 @@ def verify_jwt_or_secret_key(algorithm, keycloak_server_url, secret_keys=None):
         keycloak_server_url: Base URL of the Keycloak server.
         secret_keys: Optional list of valid secret keys for SecretKey auth.
     """
-    if secret_keys is None:
-        secret_keys = []
-
     auth_header = request.headers.get("Authorization")
 
     if not auth_header:
         abort(401, description="Authorization header is missing.")
 
-    if auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
+    scheme, credential = parse_authorization_header(auth_header)
+
+    if scheme == "Bearer":
+        token = credential
         try:
             unverified_header = jwt.get_unverified_header(token)
             unverified_claims = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
@@ -271,9 +318,8 @@ def verify_jwt_or_secret_key(algorithm, keycloak_server_url, secret_keys=None):
         except jwt.PyJWTError as jwt_err:
             abort(401, description=f"Token verification failed: {jwt_err}")
 
-    elif auth_header.startswith("SecretKey "):
-        secret_key = auth_header.split(" ")[1]
-        if secret_key in secret_keys:
+    elif scheme == "SecretKey":
+        if secret_key_is_valid(credential, secret_keys):
             return {
                 "user": "sqs_feeder",
                 "permissions": ["sqs_feeder_access"],
@@ -470,11 +516,10 @@ def get_impersonation_context():
         except jwt.PyJWTError:
             pass
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    scheme, token = parse_authorization_header(request.headers.get("Authorization"))
+    if scheme != "Bearer":
         return default
 
-    token = auth_header.split(" ")[1]
     try:
         claims = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
     except jwt.PyJWTError:
