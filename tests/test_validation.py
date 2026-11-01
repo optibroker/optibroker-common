@@ -27,6 +27,15 @@ class TestConfigure:
         assert _auth_config["keycloak_server_url"] == "http://keycloak"
         assert _auth_config["secret_keys"] == ["key1"]
 
+    def test_drops_unset_secret_keys(self):
+        # OB-438: a key whose setting was never filled in is '' -- not a key.
+        configure("RS256", "http://keycloak", secret_keys=["", "key1", "  ", None])
+        assert _auth_config["secret_keys"] == ["key1"]
+
+    def test_only_unset_secret_keys_leaves_none(self):
+        configure("RS256", "http://keycloak", secret_keys=["", ""])
+        assert _auth_config["secret_keys"] == []
+
     def test_updates_existing_config(self):
         configure("RS256", "http://keycloak1")
         configure("RS512", "http://keycloak2")
@@ -60,7 +69,7 @@ class TestGetCurrentUser:
             ["VIEW"],
             algorithm="RS256",
             keycloak_server_url="http://keycloak",
-            secret_keys=None,
+            secret_keys=[],
             allow_secret_key=False,
             get_realms_func=None,
         )

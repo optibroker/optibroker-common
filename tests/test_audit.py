@@ -41,6 +41,17 @@ class TestAuditLogger:
         assert "event_id" in message
         assert "timestamp" in message
 
+    def test_log_never_copies_a_secret_key(self, app):
+        mock_sender = MagicMock()
+        audit = AuditLogger(sender=mock_sender)
+
+        with app.test_request_context("/api/payments", headers={"Authorization": "SecretKey the-secret"}):
+            audit.log("pay-1", "payment", "create", "payment_created", "payments-api")
+
+        message = mock_sender.send_message.call_args[0][0]
+        assert message["jwt"] == ""
+        assert "the-secret" not in str(message)
+
     def test_log_handles_missing_json(self, app):
         mock_sender = MagicMock()
         audit = AuditLogger(sender=mock_sender)

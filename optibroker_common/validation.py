@@ -1,7 +1,7 @@
 import logging
 from functools import wraps
 
-from optibroker_common.authentication import has_permission, set_impersonation_public_key
+from optibroker_common.authentication import has_permission, set_impersonation_public_key, usable_secret_keys
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ def configure(algorithm, keycloak_server_url, secret_keys=None, get_realms_func=
     _auth_config.update({
         "algorithm": algorithm,
         "keycloak_server_url": keycloak_server_url,
-        "secret_keys": secret_keys,
+        # An unset (empty) key is dropped here, not stored as one (OB-438).
+        "secret_keys": usable_secret_keys(secret_keys),
         "get_realms_func": get_realms_func,
     })
 
