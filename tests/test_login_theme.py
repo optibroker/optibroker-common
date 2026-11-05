@@ -154,6 +154,19 @@ class TestRender:
         assert b"fswAuthy=Authy" in messages
         assert b"any authenticator app" in messages  # the list is suggestions, not a requirement
 
+    def test_a_second_authenticator_never_fails_for_a_blank_device_name(self):
+        # Keycloak rejects a blank name here and generates a new secret, so the
+        # code the user just scanned stops working and reads as wrong.
+        theme = render_theme({})
+        totp = theme["login/login-config-totp.ftl"]
+        assert b'value="${msg("fswTotpDefaultDevice", nextDevice)}"' in totp
+        assert b"fswTotpDefaultDevice=" in theme["login/messages/messages_en.properties"]
+
+    def test_a_rejected_code_says_the_qr_code_has_changed(self):
+        theme = render_theme({})
+        assert b'msg("fswTotpRescan")' in theme["login/login-config-totp.ftl"]
+        assert b"fswTotpRescan=" in theme["login/messages/messages_en.properties"]
+
 
 class TestBranding:
     @pytest.mark.parametrize("colour", [None, "", "green", "#12345", "javascript:alert(1)"])

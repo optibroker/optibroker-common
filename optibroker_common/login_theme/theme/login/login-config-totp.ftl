@@ -1,5 +1,10 @@
 <#import "template.ftl" as layout>
 <#assign manual = mode?? && mode = "manual">
+<#-- Keycloak insists on a name for any authenticator after the first, and every
+     rejected submit generates a new secret. So a blank name used to throw away
+     the code the user had just scanned, and their next correct code read as
+     wrong. A default keeps the name optional for them. -->
+<#assign nextDevice = totp.otpCredentials?size + 1>
 <!DOCTYPE html>
 <html lang="en">
 <@layout.head title=msg("loginTotpTitle")/>
@@ -122,14 +127,18 @@
                     ${kcSanitize(messagesPerField.get('totp'))?no_esc}
                   </span>
                 </#if>
+                <#if messagesPerField.existsError('totp','userLabel')>
+                  <span id="totp-rescan" class="fsw-field-error" aria-live="polite">${msg("fswTotpRescan")}</span>
+                </#if>
               </div>
 
               <div class="fsw-field">
                 <label for="userLabel">
                   ${msg("fswTotpDevice")}
-                  <#if totp.otpCredentials?size gte 1><span class="fsw-required">*</span><#else><span class="fsw-optional">${msg("fswOptional")}</span></#if>
+                  <span class="fsw-optional">${msg("fswOptional")}</span>
                 </label>
                 <input id="userLabel" name="userLabel" type="text" autocomplete="off" placeholder="${msg("fswTotpDevicePlaceholder")}"
+                       <#if totp.otpCredentials?size gte 1>value="${msg("fswTotpDefaultDevice", nextDevice)}"</#if>
                        aria-invalid="<#if messagesPerField.existsError('userLabel')>true</#if>"
                        <#if messagesPerField.existsError('userLabel')>aria-describedby="input-error-otp-label"</#if>/>
                 <#if messagesPerField.existsError('userLabel')>
