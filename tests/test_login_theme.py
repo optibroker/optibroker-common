@@ -108,6 +108,13 @@ class TestRender:
         with_logo = render_theme({}, {"logo": "img/logo.png"})["login/messages/messages_en.properties"]
         assert b"fswLogo=img/logo.png" in with_logo
 
+    def test_the_tab_icon_is_linked_only_when_uploaded(self):
+        files = render_theme({})
+        assert b"fswFavicon=\n" in files["login/messages/messages_en.properties"].replace(b"\r", b"")
+        assert b'<#if has("fswFavicon")><link rel="icon"' in files["login/template.ftl"]
+        with_icon = render_theme({}, {"favicon": "img/favicon-abc.png"})["login/messages/messages_en.properties"]
+        assert b"fswFavicon=img/favicon-abc.png" in with_icon
+
     def test_the_heading_font_and_illustration_switch(self):
         files = render_theme({"heading_font": "sans", "show_illustration": False})
         assert b"--heading-font: Inter" in files["login/resources/css/style.css"]
@@ -430,7 +437,7 @@ class TestPublish:
 
     def test_an_unknown_image_slot_is_refused(self, themes_bucket):
         with pytest.raises(ValueError, match="Unknown image"):
-            _service(FakeS3()).publish("acme", {}, {"favicon": PNG})
+            _service(FakeS3()).publish("acme", {}, {"wallpaper": PNG})
 
 
 class TestStoredAndRepublish:

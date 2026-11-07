@@ -9,7 +9,8 @@ from optibroker_common.login_theme.text import OVERRIDABLE_KEYS, PAGES
 # image paths, switches, the help URL (a branding field of its own), app
 # names, and small fixed words.
 NOT_WORDING = {
-    "companyName", "fswLogo", "fswPanelLogo", "fswHeroImage", "fswShowIllustration", "fswShowCompanyName", "fswHelpUrl",
+    "companyName", "fswLogo", "fswPanelLogo", "fswHeroImage", "fswFavicon",
+    "fswShowIllustration", "fswShowCompanyName", "fswHelpUrl",
     "fswShowPassword", "fswOr", "fswTotpCopied", "fswOptional", "fswAuthy", "fswArrowLabel",
     "loginTotpTitle", "loginTotpType", "loginTotpAlgorithm", "loginTotpDigits", "loginTotpInterval",
     "loginTotpCounter", "requiredFields", "doTryAnotherWay", "noAccount", "doRegister",

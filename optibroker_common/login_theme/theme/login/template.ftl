@@ -20,6 +20,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="robots" content="noindex, nofollow"/>
   <title>${title} · ${msg("companyName")}</title>
+  <#if has("fswFavicon")><link rel="icon" href="${url.resourcesPath}/${msg("fswFavicon")}"/></#if>
   <#-- ?v= changes with every publish: Keycloak lets browsers cache this for 30 days. -->
   <link rel="stylesheet" href="${url.resourcesPath}/css/style.css?v=@@ASSET_VERSION@@"/>
 </head>

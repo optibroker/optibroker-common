@@ -129,8 +129,9 @@ def font_files(branding):
 
 
 # Uploadable images: the logo beside the company name, an optional lighter one
-# for the dark login panel, and a photo that replaces the panel's drawing.
-IMAGE_SLOTS = ("logo", "panel_logo", "hero_image")
+# for the dark login panel, a photo that replaces the panel's drawing, and the
+# icon on the browser tab.
+IMAGE_SLOTS = ("logo", "panel_logo", "hero_image", "favicon")
 MAX_IMAGE_BYTES = 1_000_000
 _IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/svg+xml": "svg"}
 _IMAGE_CONTENT_TYPES = {ext: mime for mime, ext in _IMAGE_TYPES.items()}
