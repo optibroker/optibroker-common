@@ -53,6 +53,7 @@ PAGES = [
         _entry("fswCodePlaceholder", "Code placeholder", "placeholder"),
         _entry("fswTotpDevice", "Device name label", "label"),
         _entry("fswTotpDevicePlaceholder", "Device name placeholder", "placeholder"),
+        _entry("fswTotpRescan", "Message when a new QR code replaces the old one", "note"),
         _entry("fswTotpNote", "One-time setup note", "note"),
         _entry("fswTotpSubmit", "Verify button", "button"),
         _entry("fswNeedHelp", "Help link text", "link"),
@@ -132,6 +133,9 @@ PAGES = [
         _entry("fswNotice", "Title when there is none", "title"),
         _entry("fswProceed", "Continue button", "button"),
         _entry("fswBackToApp", "Back to the application button", "button"),
+        _entry("fswSignedInTitle", "Title when someone already signed in opens a sign-in page", "title"),
+        _entry("fswSignedInSubtitle", "Subtitle when already signed in", "subtitle"),
+        _entry("fswGoToApp", "Button when already signed in", "button"),
     ]},
     {"id": "logout", "label": "Log out", "texts": [
         _entry("fswLogoutTitle", "Title", "title"),

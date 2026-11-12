@@ -55,6 +55,7 @@ DEFAULT_BRANDING = {
     "totp_subtitle": "You'll use a code from your phone each time you sign in.",
     "footer_text": "All rights reserved.",
     "help_url": "",
+    "app_url": "",                      # the company's app; set by the provisioner, not the editor
     "show_illustration": True,
     "show_company_name": True,          # beside the logo; off when the logo already says it
     "logo_height": None,               # px; None is the theme's own size (see LOGO_SIZES)
@@ -249,6 +250,8 @@ def normalise_branding(data):
         if key in data and data[key] is not None:
             branding[key] = " ".join(str(data[key]).split())[:MAX_TEXT]
     branding["help_url"] = _safe_url(branding["help_url"])
+    app_url = _safe_url(branding["app_url"])
+    branding["app_url"] = app_url if re.match(r"^https?://", app_url, re.I) else ""
     for key in COLOUR_FIELDS:
         rgb = _rgb(data.get(key))
         if rgb is not None:
