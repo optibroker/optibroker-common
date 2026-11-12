@@ -53,6 +53,7 @@ PAGES = [
         _entry("fswCodePlaceholder", "Code placeholder", "placeholder"),
         _entry("fswTotpDevice", "Device name label", "label"),
         _entry("fswTotpDevicePlaceholder", "Device name placeholder", "placeholder"),
+        _entry("fswTotpRescan", "Message when a new QR code replaces the old one", "note"),
         _entry("fswTotpNote", "One-time setup note", "note"),
         _entry("fswTotpSubmit", "Verify button", "button"),
         _entry("fswNeedHelp", "Help link text", "link"),

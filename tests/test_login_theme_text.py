@@ -6,12 +6,13 @@ from optibroker_common.login_theme.engine import BASE_THEME_DIR, normalise_brand
 from optibroker_common.login_theme.text import OVERRIDABLE_KEYS, PAGES
 
 # Message keys the templates read that are not wording a company edits here:
-# image paths, switches, the help URL (a branding field of its own), app
-# names, and small fixed words.
+# image paths, switches, the help and app URLs (branding fields of their own),
+# app names, small fixed words, and fswTotpDefaultDevice, whose {0} an
+# override would escape.
 NOT_WORDING = {
     "companyName", "fswLogo", "fswPanelLogo", "fswHeroImage", "fswFavicon",
     "fswShowIllustration", "fswShowCompanyName", "fswHelpUrl", "fswAppUrl", "alreadyLoggedIn",
-    "fswShowPassword", "fswOr", "fswTotpCopied", "fswOptional", "fswAuthy", "fswArrowLabel",
+    "fswShowPassword", "fswTotpDefaultDevice", "fswOr", "fswTotpCopied", "fswOptional", "fswAuthy", "fswArrowLabel",
     "loginTotpTitle", "loginTotpType", "loginTotpAlgorithm", "loginTotpDigits", "loginTotpInterval",
     "loginTotpCounter", "requiredFields", "doTryAnotherWay", "noAccount", "doRegister",
 }
