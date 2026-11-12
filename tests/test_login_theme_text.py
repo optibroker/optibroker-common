@@ -10,7 +10,7 @@ from optibroker_common.login_theme.text import OVERRIDABLE_KEYS, PAGES
 # names, and small fixed words.
 NOT_WORDING = {
     "companyName", "fswLogo", "fswPanelLogo", "fswHeroImage", "fswFavicon",
-    "fswShowIllustration", "fswShowCompanyName", "fswHelpUrl",
+    "fswShowIllustration", "fswShowCompanyName", "fswHelpUrl", "fswAppUrl", "alreadyLoggedIn",
     "fswShowPassword", "fswOr", "fswTotpCopied", "fswOptional", "fswAuthy", "fswArrowLabel",
     "loginTotpTitle", "loginTotpType", "loginTotpAlgorithm", "loginTotpDigits", "loginTotpInterval",
     "loginTotpCounter", "requiredFields", "doTryAnotherWay", "noAccount", "doRegister",

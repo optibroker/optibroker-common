@@ -207,6 +207,19 @@ class TestBranding:
         assert normalise_branding({"help_url": url})["help_url"] == ""
         assert normalise_branding({"help_url": "mailto:help@acme.example"})["help_url"] == "mailto:help@acme.example"
 
+    @pytest.mark.parametrize("url", ["javascript:alert(1)", "mailto:a@b.c", "app.acme.example", "https://a.b/\"x"])
+    def test_only_web_app_urls_are_kept(self, url):
+        assert normalise_branding({"app_url": url})["app_url"] == ""
+        assert normalise_branding({"app_url": "https://app.acme.example/"})["app_url"] == "https://app.acme.example/"
+
+    def test_the_theme_knows_where_the_app_is(self):
+        # An "already logged in" page often has no client or redirect from
+        # Keycloak; the theme's own URL is where it sends the visitor.
+        files = render_theme({"app_url": "https://app.acme.example/"})
+        assert "fswAppUrl=https://app.acme.example/" in files["login/messages/messages_en.properties"].decode()
+        info = files["login/info.ftl"].decode()
+        assert 'msg("fswAppUrl")' in info and "window.location.replace" in info
+
     def test_names_are_escaped_for_keycloak_messages(self):
         # MessageFormat drops a lone quote and treats braces as arguments.
         assert _message_value("O'Brien {Finance}") == "O''Brien '{'Finance'}'"
