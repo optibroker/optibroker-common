@@ -8,9 +8,15 @@ on:
       - opened
       - synchronize
 
+# A new push to the PR cancels the run for the previous commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   merge_request_checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     services:
       docker:
