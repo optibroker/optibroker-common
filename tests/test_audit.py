@@ -35,7 +35,8 @@ class TestAuditLogger:
         assert message["action_type"] == "create"
         assert message["event"] == "payment_created"
         assert message["api"] == "payments-api"
-        assert message["jwt"] == "tok123"
+        assert "jwt" not in message
+        assert "tok123" not in str(message)
         assert message["route"] == "/api/payments"
         assert message["method"] == "post"
         assert "event_id" in message

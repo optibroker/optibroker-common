@@ -1,6 +1,8 @@
 import logging
 from functools import wraps
 
+from flask import g
+
 from optibroker_common.authentication import has_permission, set_impersonation_public_key
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,10 @@ def get_current_user(required_permissions=None, allow_secret_key=False):
                 get_realms_func=_auth_config.get("get_realms_func"),
             )
             kwargs["current_user"] = current_user
+            # Kept for the audit logger, which attributes each event to this
+            # verified identity rather than copying the request's credentials
+            # into the audit message (OB-509).
+            g.optibroker_current_user = current_user
             return f(*args, **kwargs)
 
         return wrapper
